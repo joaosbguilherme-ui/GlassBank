@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GlassBank - O Banco do Futuro</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <div class="background-blobs">
+        <div class="blob blob-1"></div>
+        <div class="blob blob-2"></div>
+        <div class="blob blob-3"></div>
+    </div>
+
+    <div id="toast-container"></div>
+
+    <div class="app-container glass">
+        
+        <section id="auth-section" class="active-section">
+            <h1>GlassBank <i class="fas fa-bolt"></i></h1>
+            <div class="auth-tabs">
+                <button onclick="toggleAuth('login')" class="active">Login</button>
+                <button onclick="toggleAuth('register')">Cadastro</button>
+            </div>
+            
+            <form id="auth-form">
+                <input type="text" id="fullname" placeholder="Nome Completo" style="display:none;">
+                <input type="email" id="email" placeholder="E-mail" required>
+                <input type="password" id="password" placeholder="Senha" required>
+                <select id="role-select" style="display:none;">
+                    <option value="user">Usuário Comum</option>
+                    <option value="merchant">Vendedor (PJ)</option>
+                </select>
+                <button type="submit" id="auth-btn">Entrar</button>
+            </form>
+        </section>
+
+        <section id="dashboard-section" class="hidden">
+            <header>
+                <div class="user-info">
+                    <img src="https://ui-avatars.com/api/?name=User" id="user-avatar" alt="Avatar">
+                    <div>
+                        <h3 id="user-name">Carregando...</h3>
+                        <span id="user-role" class="badge">Usuário</span>
+                    </div>
+                </div>
+                <button id="logout-btn"><i class="fas fa-sign-out-alt"></i></button>
+            </header>
+
+            <div class="balance-card glass-card">
+                <p>Saldo Disponível</p>
+                <h1 id="user-balance">R$ 0,00</h1>
+                <p class="account-id">ID: <span id="user-id">...</span></p>
+            </div>
+
+            <div class="actions-grid">
+                <button onclick="navTo('transfer')"><i class="fas fa-paper-plane"></i> Transferir</button>
+                <button onclick="navTo('qr-gen')"><i class="fas fa-qrcode"></i> Cobrar</button>
+                <button onclick="navTo('qr-scan')"><i class="fas fa-camera"></i> Pagar</button>
+                <button onclick="toggleHistory()"><i class="fas fa-history"></i> Extrato</button>
+            </div>
+
+            <div id="history-panel" class="glass-panel hidden">
+                <h3>Histórico</h3>
+                <ul id="transaction-list">
+                    </ul>
+                <button class="close-panel" onclick="toggleHistory()">Fechar</button>
+            </div>
+        </section>
+
+        <section id="transfer-section" class="hidden">
+            <button class="back-btn" onclick="navTo('dashboard')"><i class="fas fa-arrow-left"></i> Voltar</button>
+            <h2>Transferência</h2>
+            <form id="transfer-form">
+                <input type="text" id="dest-id" placeholder="ID do Destinatário" required>
+                <input type="number" id="amount" placeholder="Valor (R$)" min="0.01" step="0.01" required>
+                <p class="tax-info">Imposto municipal (2%): <span id="tax-calc">R$ 0,00</span></p>
+                <button type="submit">Enviar Pix Glass</button>
+            </form>
+        </section>
+
+        <section id="qr-gen-section" class="hidden">
+            <button class="back-btn" onclick="navTo('dashboard')"><i class="fas fa-arrow-left"></i> Voltar</button>
+            <h2>Cobrar via QR</h2>
+            <input type="number" id="qr-amount" placeholder="Valor a cobrar" oninput="generateQR()">
+            <div id="qrcode-container"></div>
+            <p>Peça para o cliente escanear</p>
+        </section>
+
+        <section id="qr-scan-section" class="hidden">
+            <button class="back-btn" onclick="navTo('dashboard')"><i class="fas fa-arrow-left"></i> Voltar</button>
+            <h2>Pagar via QR</h2>
+            <div id="reader" width="300px"></div>
+            <div id="scan-result" class="hidden">
+                <p>Pagar <strong>R$ <span id="scan-amt"></span></strong> para <span id="scan-to"></span>?</p>
+                <button id="confirm-pay-btn">Confirmar Pagamento</button>
+                <button onclick="resetScanner()" class="secondary">Cancelar</button>
+            </div>
+        </section>
+
+    </div>
+
+    <script type="module" src="script.js"></script>
+</body>
+</html>

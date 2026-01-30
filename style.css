@@ -1,0 +1,145 @@
+:root {
+    --primary: #6a11cb;
+    --secondary: #2575fc;
+    --glass-bg: rgba(255, 255, 255, 0.15);
+    --glass-border: rgba(255, 255, 255, 0.2);
+    --text: #ffffff;
+    --success: #00b894;
+    --danger: #d63031;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Poppins', sans-serif; }
+
+body {
+    background: #0f0c29;
+    color: var(--text);
+    height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    overflow: hidden;
+}
+
+/* Fundo Animado */
+.background-blobs { position: absolute; width: 100%; height: 100%; z-index: -1; filter: blur(80px); }
+.blob { position: absolute; border-radius: 50%; animation: move 10s infinite alternate; }
+.blob-1 { width: 300px; height: 300px; background: var(--primary); top: 10%; left: 10%; }
+.blob-2 { width: 250px; height: 250px; background: var(--secondary); bottom: 10%; right: 10%; }
+.blob-3 { width: 150px; height: 150px; background: #ff007f; top: 40%; left: 40%; }
+
+@keyframes move { 0% { transform: translate(0, 0); } 100% { transform: translate(20px, 40px); } }
+
+/* Container Principal Glassmorphism */
+.app-container {
+    width: 380px;
+    height: 700px;
+    background: var(--glass-bg);
+    backdrop-filter: blur(15px);
+    -webkit-backdrop-filter: blur(15px);
+    border: 1px solid var(--glass-border);
+    border-radius: 20px;
+    padding: 20px;
+    position: relative;
+    overflow-y: auto;
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+}
+
+/* Sections */
+section { display: none; animation: fadeIn 0.3s ease; flex-direction: column; gap: 15px; }
+.active-section { display: flex; }
+.hidden { display: none !important; }
+
+@keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+/* Componentes */
+input, select, button {
+    width: 100%;
+    padding: 12px;
+    border-radius: 10px;
+    border: none;
+    outline: none;
+    margin-bottom: 10px;
+}
+
+input, select {
+    background: rgba(255, 255, 255, 0.1);
+    color: white;
+    border: 1px solid var(--glass-border);
+}
+input::placeholder { color: rgba(255,255,255,0.6); }
+
+button {
+    background: linear-gradient(45deg, var(--primary), var(--secondary));
+    color: white;
+    font-weight: bold;
+    cursor: pointer;
+    transition: 0.2s;
+}
+button:active { transform: scale(0.96); }
+button.secondary { background: rgba(255,255,255,0.1); }
+
+/* Dashboard */
+header { display: flex; justify-content: space-between; align-items: center; }
+.user-info { display: flex; align-items: center; gap: 10px; }
+.user-info img { width: 40px; border-radius: 50%; }
+.badge { background: var(--secondary); padding: 2px 8px; border-radius: 10px; font-size: 0.7em; }
+
+.balance-card {
+    background: linear-gradient(135deg, rgba(255,255,255,0.2), rgba(255,255,255,0.05));
+    padding: 20px;
+    border-radius: 15px;
+    text-align: center;
+    border: 1px solid var(--glass-border);
+}
+.balance-card h1 { font-size: 2.5em; margin: 10px 0; }
+.account-id { font-family: monospace; opacity: 0.7; }
+
+.actions-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+.actions-grid button {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 5px;
+    background: rgba(255,255,255,0.1);
+    padding: 15px;
+}
+
+/* QR Code */
+#qrcode-container {
+    background: white;
+    padding: 10px;
+    border-radius: 10px;
+    width: fit-content;
+    margin: 0 auto;
+}
+
+/* Scanner */
+#reader { border-radius: 10px; overflow: hidden; margin-top: 10px; }
+
+/* Histórico */
+.glass-panel {
+    background: rgba(0,0,0,0.8);
+    position: absolute;
+    bottom: 0; left: 0; width: 100%; height: 60%;
+    border-radius: 20px 20px 0 0;
+    padding: 20px;
+    overflow-y: scroll;
+}
+#transaction-list li {
+    list-style: none;
+    padding: 10px;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    display: flex;
+    justify-content: space-between;
+}
+.tx-negative { color: #ff7675; }
+.tx-positive { color: #55efc4; }
+
+/* Toast */
+#toast-container { position: fixed; top: 20px; right: 20px; z-index: 100; }
+.toast { background: rgba(0,0,0,0.8); padding: 10px 20px; margin-bottom: 10px; border-radius: 5px; border-left: 4px solid var(--success); }
+.toast.error { border-left-color: var(--danger); }
