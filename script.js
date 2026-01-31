@@ -2,7 +2,6 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/9.6.1/firebase
 import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-auth.js";
 import { getFirestore, doc, setDoc, getDoc, updateDoc, collection, query, where, onSnapshot, runTransaction, serverTimestamp, limit, getDocs } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-firestore.js";
 
-// --- SUAS CONFIGURAÇÕES (Mantenha as suas chaves aqui se forem diferentes) ---
 const firebaseConfig = {
   apiKey: "AIzaSyBkl7Vt5WHMoiU3mThXiG7hAzv1T0FvSRI",
   authDomain: "glassbank-c411b.firebaseapp.com",
@@ -23,17 +22,15 @@ const CITY_HALL_ID = "DIGITE_O_ID_DA_PREFEITURA_AQUI";
 
 let currentUserData = null;
 let html5QrcodeScanner = null;
-let currentTaxRate = 0.02; // Padrão 2% (será atualizado pelo banco)
+let currentTaxRate = 0.02;
 
-// --- GERADOR DE ID CURTO ---
 function generateShortId() {
     const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     let result = "";
     for(let i=0; i<6; i++) result += chars.charAt(Math.floor(Math.random() * chars.length));
-    return result; // Ex: A4B9X1
+    return result;
 }
 
-// --- UI HELPERS ---
 const showToast = (msg, type = 'success') => {
     const container = document.getElementById('toast-container');
     const toast = document.createElement('div');
@@ -43,13 +40,21 @@ const showToast = (msg, type = 'success') => {
     setTimeout(() => toast.remove(), 4000);
 };
 
+// CORREÇÃO: Função navTo robusta que garante reset das classes
 window.navTo = (sectionId) => {
+    // Esconde todas as sections
     document.querySelectorAll('section').forEach(s => s.classList.add('hidden'));
-    const target = document.getElementById(sectionId + '-section') || document.getElementById(sectionId);
+    
+    // Identifica o alvo (aceita "dashboard" ou "dashboard-section")
+    const targetId = sectionId.endsWith('-section') ? sectionId : sectionId + '-section';
+    const target = document.getElementById(targetId);
+    
     if(target) {
         target.classList.remove('hidden');
         if(sectionId === 'qr-scan') startScanner();
         else stopScanner();
+    } else {
+        console.error("Tela não encontrada:", sectionId);
     }
 };
 
@@ -59,6 +64,10 @@ window.toggleAuth = (mode) => {
     document.getElementById('role-select').style.display = isRegister ? 'block' : 'none';
     document.getElementById('auth-btn').innerText = isRegister ? 'Cadastrar' : 'Entrar';
     document.getElementById('auth-form').dataset.mode = mode;
+    
+    // Atualiza botões visuais
+    document.querySelectorAll('.auth-tabs button').forEach(b => b.classList.remove('active'));
+    event.target.classList.add('active');
 };
 
 window.toggleHistory = () => {
@@ -93,19 +102,27 @@ authForm.addEventListener('submit', async (e) => {
     }
 });
 
+// CORREÇÃO: Adicionando lógica do botão de Sair (Logout)
+document.getElementById('logout-btn').addEventListener('click', () => {
+    signOut(auth).then(() => {
+        showToast("Você saiu da conta.");
+        navTo('auth');
+    }).catch((error) => {
+        showToast("Erro ao sair.", "error");
+    });
+});
+
 // --- LOAD DATA ---
 onAuthStateChanged(auth, (user) => {
     if (user) {
-        document.getElementById('auth-section').classList.add('hidden');
+        // CORREÇÃO: Força navegação para dashboard ao logar
         navTo('dashboard');
         
-        // Monitora o usuário
         onSnapshot(doc(db, "users", user.uid), (docSnap) => {
             if (docSnap.exists()) {
                 currentUserData = docSnap.data();
                 currentUserData.uid = user.uid;
                 
-                // Se não tiver ID curto, cria um
                 if (!currentUserData.shortId) {
                     updateDoc(doc(db, "users", user.uid), { shortId: generateShortId() });
                 }
@@ -114,47 +131,53 @@ onAuthStateChanged(auth, (user) => {
                 document.getElementById('user-role').innerText = currentUserData.role === 'merchant' ? 'Vendedor' : 'Usuário';
                 document.getElementById('user-balance').innerText = `R$ ${currentUserData.balance.toFixed(2)}`;
                 document.getElementById('user-short-id').innerText = currentUserData.shortId || "...";
-                document.getElementById('user-avatar').src = `https://ui-avatars.com/api/?name=${currentUserData.name}&background=random`;
+                
+                // CORREÇÃO: Encode URI para evitar quebra com espaços no nome
+                document.getElementById('user-avatar').src = `https://ui-avatars.com/api/?name=${encodeURIComponent(currentUserData.name)}&background=random`;
 
-                // Configurações de Admin
+                // Admin UI
                 if (currentUserData.role === 'admin') {
                     document.getElementById('admin-btn').classList.remove('hidden');
                     loadAdminData();
+                } else {
+                    document.getElementById('admin-btn').classList.add('hidden');
                 }
             }
         });
 
         listenToTransactions(user.uid);
-        syncTaxRate(); // Busca a taxa de imposto atualizada
+        syncTaxRate();
 
     } else {
         navTo('auth');
+        currentUserData = null;
     }
 });
 
 // --- SISTEMA DE IMPOSTOS ---
 function syncTaxRate() {
-    // Monitora a conta da Prefeitura para pegar a taxa de imposto (campo: customTax)
+    // CORREÇÃO: Evita crash se o ID da prefeitura não estiver configurado no código
+    if (!CITY_HALL_ID || CITY_HALL_ID.length < 5) return;
+
     onSnapshot(doc(db, "users", CITY_HALL_ID), (docSnap) => {
         if(docSnap.exists()) {
             const data = docSnap.data();
-            // Se existir 'customTax', usa. Se não, usa 0.02 (2%)
             currentTaxRate = data.customTax !== undefined ? data.customTax : 0.02;
             
-            // Atualiza na tela
             document.getElementById('current-tax-display').innerText = (currentTaxRate * 100).toFixed(1);
             document.getElementById('tax-percent-display').innerText = (currentTaxRate * 100).toFixed(1);
         }
+    }, (error) => {
+        console.warn("Sem permissão para ler dados da prefeitura ou ID inválido.");
     });
 }
 
-// Função para o Admin alterar a taxa
 window.updateTaxRate = async () => {
     const inputVal = parseFloat(document.getElementById('new-tax-rate').value);
     if(isNaN(inputVal) || inputVal < 0 || inputVal > 50) {
         return showToast("Taxa inválida (0 a 50%)", "error");
     }
-    const newRate = inputVal / 100; // Converte 5 para 0.05
+    const newRate = inputVal / 100;
     
     try {
         await updateDoc(doc(db, "users", CITY_HALL_ID), {
@@ -162,11 +185,11 @@ window.updateTaxRate = async () => {
         });
         showToast(`Imposto atualizado para ${inputVal}%`);
     } catch (e) {
-        showToast("Erro: Você não tem permissão ou ID da prefeitura incorreto.", "error");
+        showToast("Erro: Permissão negada.", "error");
     }
 };
 
-// --- TRANSAÇÕES (CORRIGIDO) ---
+// --- TRANSAÇÕES ---
 async function getUidFromShortId(shortId) {
     const q = query(collection(db, "users"), where("shortId", "==", shortId));
     const snapshot = await getDocs(q);
@@ -174,13 +197,11 @@ async function getUidFromShortId(shortId) {
     return { uid: snapshot.docs[0].id, data: snapshot.docs[0].data() };
 }
 
-// Transferência Manual
 document.getElementById('transfer-form').addEventListener('submit', async (e) => {
-    e.preventDefault(); // Impede recarregar a página
+    e.preventDefault();
     const shortId = document.getElementById('dest-id').value.toUpperCase().trim();
     const amt = parseFloat(document.getElementById('amount').value);
     
-    // Desabilita botão para evitar duplo clique
     const btn = e.target.querySelector('button');
     btn.disabled = true;
     btn.innerText = "Processando...";
@@ -203,9 +224,7 @@ async function processTransaction(receiverShortId, amount) {
         const tax = amount * currentTaxRate;
         const totalDeduction = amount + tax;
 
-        // Executa a transação atômica
         await runTransaction(db, async (transaction) => {
-            // Lê remetente
             const senderRef = doc(db, "users", currentUserData.uid);
             const senderDoc = await transaction.get(senderRef);
             if (!senderDoc.exists()) throw "Remetente não existe!";
@@ -213,16 +232,14 @@ async function processTransaction(receiverShortId, amount) {
             const senderBalance = senderDoc.data().balance;
             if (senderBalance < totalDeduction) throw "Saldo insuficiente (Valor + Taxa)";
 
-            // Lê destinatário
             const receiverRef = doc(db, "users", receiverInfo.uid);
             const receiverDoc = await transaction.get(receiverRef);
             if (!receiverDoc.exists()) throw "Destinatário inválido!";
 
-            // Processa valores
             transaction.update(senderRef, { balance: senderBalance - totalDeduction });
             transaction.update(receiverRef, { balance: receiverDoc.data().balance + amount });
 
-            // Envia imposto para Prefeitura (se existir)
+            // Envia imposto apenas se ID for válido
             if (CITY_HALL_ID && CITY_HALL_ID.length > 5) {
                 const cityRef = doc(db, "users", CITY_HALL_ID);
                 const cityDoc = await transaction.get(cityRef);
@@ -231,7 +248,6 @@ async function processTransaction(receiverShortId, amount) {
                 }
             }
 
-            // Registra histórico
             const txRef = doc(collection(db, "transactions"));
             transaction.set(txRef, {
                 senderId: currentUserData.uid,
@@ -257,13 +273,12 @@ async function processTransaction(receiverShortId, amount) {
     }
 }
 
-// Calculadora de Taxa Visual
 document.getElementById('amount').addEventListener('input', (e) => {
     const val = parseFloat(e.target.value) || 0;
     document.getElementById('tax-calc').innerText = `R$ ${(val * currentTaxRate).toFixed(2)}`;
 });
 
-// --- QR CODE (CORRIGIDO VIA API) ---
+// --- QR CODE ---
 window.generateQR = () => {
     const amt = document.getElementById('qr-amount').value;
     const img = document.getElementById('qr-image');
@@ -273,18 +288,20 @@ window.generateQR = () => {
         return;
     }
 
-    // Cria JSON com ID Curto e Valor
     const payload = JSON.stringify({ sid: currentUserData.shortId, amt: parseFloat(amt) });
-    
-    // Usa API do qrserver (Gera imagem real)
     const apiUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(payload)}`;
     
     img.src = apiUrl;
     img.style.display = 'block';
 };
 
-// Scanner (Mantido, mas com logs de erro)
 function startScanner() {
+    // Verifica se já existe instância para evitar erro de inicialização dupla
+    if (html5QrcodeScanner) {
+         // Opcional: reiniciar ou apenas focar
+         return; 
+    }
+    
     html5QrcodeScanner = new Html5Qrcode("reader");
     html5QrcodeScanner.start(
         { facingMode: "environment" }, 
@@ -300,29 +317,30 @@ function startScanner() {
                         document.getElementById('scan-amt').innerText = data.amt;
                         document.getElementById('scan-to-name').innerText = rData.data.name;
                         
-                        // Configura botão de confirmar
                         const btn = document.getElementById('confirm-pay-btn');
-                        // Remove listeners antigos para evitar duplo pagamento
                         const newBtn = btn.cloneNode(true);
                         btn.parentNode.replaceChild(newBtn, btn);
                         
                         newBtn.addEventListener('click', () => processTransaction(data.sid, data.amt));
                     } else {
-                        showToast("Usuário do QR não encontrado", "error");
-                        startScanner();
+                        showToast("Usuário não encontrado", "error");
+                        setTimeout(startScanner, 2000); // Tenta de novo após 2s
                     }
                 }
             } catch (e) { console.log("Lendo..."); }
         },
         (errorMessage) => {}
     ).catch(err => {
-        showToast("Erro na câmera. Verifique se o site tem permissão.", "error");
+        showToast("Erro na câmera. Verifique permissões.", "error");
     });
 }
 
 function stopScanner() {
     if(html5QrcodeScanner) {
-        html5QrcodeScanner.stop().then(() => html5QrcodeScanner.clear()).catch(()=>{});
+        html5QrcodeScanner.stop().then(() => {
+            html5QrcodeScanner.clear();
+            html5QrcodeScanner = null;
+        }).catch(()=>{});
     }
 }
 
@@ -331,13 +349,14 @@ window.resetScanner = () => {
     startScanner();
 };
 
-// Funções de Admin
 function loadAdminData() {
+    if (!CITY_HALL_ID || CITY_HALL_ID.length < 5) return;
+
     onSnapshot(doc(db, "users", CITY_HALL_ID), (docSnap) => {
         if(docSnap.exists()) {
             document.getElementById('city-hall-balance').innerText = `R$ ${docSnap.data().balance.toFixed(2)}`;
         }
-    });
+    }, error => console.log("Admin access error"));
 
     const q = query(collection(db, "users"), limit(10));
     onSnapshot(q, (snap) => {
