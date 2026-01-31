@@ -1,9 +1,8 @@
-// Importações
 import { initializeApp } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-app.js";
 import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-auth.js";
-import { getFirestore, doc, setDoc, getDoc, updateDoc, collection, query, where, onSnapshot, runTransaction, serverTimestamp, orderBy, limit, getDocs } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-firestore.js";
+import { getFirestore, doc, setDoc, getDoc, updateDoc, collection, query, where, onSnapshot, runTransaction, serverTimestamp, limit, getDocs } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-firestore.js";
 
-// --- CONFIGURAÇÃO ---
+// --- SUAS CONFIGURAÇÕES (Mantenha as suas chaves aqui se forem diferentes) ---
 const firebaseConfig = {
   apiKey: "AIzaSyBkl7Vt5WHMoiU3mThXiG7hAzv1T0FvSRI",
   authDomain: "glassbank-c411b.firebaseapp.com",
@@ -17,50 +16,41 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-// --- ESTADO GLOBAL ---
+// ======================================================
+// ⚠️ ATENÇÃO: COLOQUE O ID DA PREFEITURA AQUI
+const CITY_HALL_ID = "DIGITE_O_ID_DA_PREFEITURA_AQUI"; 
+// ======================================================
+
 let currentUserData = null;
 let html5QrcodeScanner = null;
+let currentTaxRate = 0.02; // Padrão 2% (será atualizado pelo banco)
 
-// ======================================================
-// ⚠️ COLOQUE AQUI O ID (UID) REAL DA CONTA DA PREFEITURA
-// Pegue no Firebase > Firestore > users
-const CITY_HALL_ID = "COLE_O_ID_DA_PREFEITURA_AQUI"; 
-// ======================================================
-
-const TAX_RATE = 0.02;
-
-// --- FUNÇÃO GERADORA DE ID (2 Digitos, 1 Letra, 2 Digitos, 1 Letra) ---
+// --- GERADOR DE ID CURTO ---
 function generateShortId() {
-    const n = () => Math.floor(Math.random() * 10);
-    const l = () => "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[Math.floor(Math.random() * 26)];
-    return `${n()}${n()}${l()}${n()}${n()}${l()}`;
+    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    let result = "";
+    for(let i=0; i<6; i++) result += chars.charAt(Math.floor(Math.random() * chars.length));
+    return result; // Ex: A4B9X1
 }
 
 // --- UI HELPERS ---
-const vibrate = () => { if(navigator.vibrate) navigator.vibrate(30); }
-
 const showToast = (msg, type = 'success') => {
     const container = document.getElementById('toast-container');
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
     toast.innerText = msg;
     container.appendChild(toast);
-    setTimeout(() => toast.remove(), 3000);
+    setTimeout(() => toast.remove(), 4000);
 };
 
 window.navTo = (sectionId) => {
-    document.querySelectorAll('section').forEach(s => s.classList.remove('active-section'));
     document.querySelectorAll('section').forEach(s => s.classList.add('hidden'));
-    
-    const target = document.getElementById(sectionId + (sectionId.includes('-section') ? '' : '-section'));
+    const target = document.getElementById(sectionId + '-section') || document.getElementById(sectionId);
     if(target) {
         target.classList.remove('hidden');
-        target.classList.add('active-section');
+        if(sectionId === 'qr-scan') startScanner();
+        else stopScanner();
     }
-    vibrate();
-    
-    if(sectionId === 'qr-scan') startScanner();
-    else stopScanner();
 };
 
 window.toggleAuth = (mode) => {
@@ -69,8 +59,6 @@ window.toggleAuth = (mode) => {
     document.getElementById('role-select').style.display = isRegister ? 'block' : 'none';
     document.getElementById('auth-btn').innerText = isRegister ? 'Cadastrar' : 'Entrar';
     document.getElementById('auth-form').dataset.mode = mode;
-    document.querySelectorAll('.auth-tabs button').forEach(b => b.classList.remove('active'));
-    event.target.classList.add('active');
 };
 
 window.toggleHistory = () => {
@@ -89,132 +77,96 @@ authForm.addEventListener('submit', async (e) => {
         if (mode === 'register') {
             const name = document.getElementById('fullname').value;
             const role = document.getElementById('role-select').value;
-            const newShortId = generateShortId(); // Gera ID Curto
+            const shortId = generateShortId();
             
             const userCred = await createUserWithEmailAndPassword(auth, email, password);
-            
             await setDoc(doc(db, "users", userCred.user.uid), {
-                name: name,
-                email: email,
-                role: role,
-                shortId: newShortId, // Salva o ID curto
-                balance: 1000.00,
-                createdAt: serverTimestamp()
+                name: name, email: email, role: role, shortId: shortId,
+                balance: 1000.00, createdAt: serverTimestamp()
             });
-            showToast("Conta criada! ID: " + newShortId);
+            showToast("Bem-vindo! ID: " + shortId);
         } else {
             await signInWithEmailAndPassword(auth, email, password);
         }
     } catch (error) {
-        showToast(error.message, 'error');
+        showToast("Erro: " + error.message, 'error');
     }
 });
 
+// --- LOAD DATA ---
 onAuthStateChanged(auth, (user) => {
     if (user) {
-        document.getElementById('auth-section').classList.remove('active-section');
+        document.getElementById('auth-section').classList.add('hidden');
         navTo('dashboard');
-        loadUserData(user.uid);
+        
+        // Monitora o usuário
+        onSnapshot(doc(db, "users", user.uid), (docSnap) => {
+            if (docSnap.exists()) {
+                currentUserData = docSnap.data();
+                currentUserData.uid = user.uid;
+                
+                // Se não tiver ID curto, cria um
+                if (!currentUserData.shortId) {
+                    updateDoc(doc(db, "users", user.uid), { shortId: generateShortId() });
+                }
+
+                document.getElementById('user-name').innerText = currentUserData.name;
+                document.getElementById('user-role').innerText = currentUserData.role === 'merchant' ? 'Vendedor' : 'Usuário';
+                document.getElementById('user-balance').innerText = `R$ ${currentUserData.balance.toFixed(2)}`;
+                document.getElementById('user-short-id').innerText = currentUserData.shortId || "...";
+                document.getElementById('user-avatar').src = `https://ui-avatars.com/api/?name=${currentUserData.name}&background=random`;
+
+                // Configurações de Admin
+                if (currentUserData.role === 'admin') {
+                    document.getElementById('admin-btn').classList.remove('hidden');
+                    loadAdminData();
+                }
+            }
+        });
+
         listenToTransactions(user.uid);
+        syncTaxRate(); // Busca a taxa de imposto atualizada
+
     } else {
         navTo('auth');
-        currentUserData = null;
     }
 });
 
-document.getElementById('logout-btn').addEventListener('click', () => signOut(auth));
-
-// --- DADOS DO USUÁRIO ---
-
-// --- Banimento ---
-
-if (currentUserData.status === 'banned') {
-    alert("Sua conta foi suspensa por violação das regras.");
-    signOut(auth);
-}
-
-function loadUserData(uid) {
-    onSnapshot(doc(db, "users", uid), async (docSnap) => {
-        if (docSnap.exists()) {
-            currentUserData = docSnap.data();
-            currentUserData.uid = uid;
-            
-            // Correção automática para usuários antigos sem ShortID
-            if (!currentUserData.shortId) {
-                const newId = generateShortId();
-                await updateDoc(doc(db, "users", uid), { shortId: newId });
-                return; // O snapshot vai rodar de novo automaticamente
-            }
-
-            document.getElementById('user-name').innerText = currentUserData.name;
-            document.getElementById('user-role').innerText = currentUserData.role === 'merchant' ? 'Vendedor' : 'Usuário';
-            document.getElementById('user-balance').innerText = `R$ ${currentUserData.balance.toFixed(2)}`;
-            
-            // Exibe o ID Curto (Visual)
-            document.getElementById('user-short-id').innerText = currentUserData.shortId;
-            document.getElementById('user-avatar').src = `https://ui-avatars.com/api/?name=${currentUserData.name}&background=random`;
-
-            // Verifica se é Admin
-            if (currentUserData.role === 'admin') {
-                document.getElementById('admin-btn').classList.remove('hidden');
-                loadAdminData();
-            }
-        }
-    });
-}
-
-// --- PAINEL ADMIN ---
-function loadAdminData() {
-    // Saldo da Prefeitura
+// --- SISTEMA DE IMPOSTOS ---
+function syncTaxRate() {
+    // Monitora a conta da Prefeitura para pegar a taxa de imposto (campo: customTax)
     onSnapshot(doc(db, "users", CITY_HALL_ID), (docSnap) => {
         if(docSnap.exists()) {
-            document.getElementById('city-hall-balance').innerText = `R$ ${docSnap.data().balance.toFixed(2)}`;
+            const data = docSnap.data();
+            // Se existir 'customTax', usa. Se não, usa 0.02 (2%)
+            currentTaxRate = data.customTax !== undefined ? data.customTax : 0.02;
+            
+            // Atualiza na tela
+            document.getElementById('current-tax-display').innerText = (currentTaxRate * 100).toFixed(1);
+            document.getElementById('tax-percent-display').innerText = (currentTaxRate * 100).toFixed(1);
         }
     });
-
-    // Lista de Usuários
-    const q = query(collection(db, "users"), limit(5));
-    onSnapshot(q, (snap) => {
-        const list = document.getElementById('admin-user-list');
-        list.innerHTML = "";
-        snap.forEach(d => {
-            const u = d.data();
-            list.innerHTML += `<li style="padding:5px; border-bottom:1px solid #ffffff20; display:flex; justify-content:space-between;">
-                <span>${u.name} <small>(${u.shortId || 'ANTIGO'})</small></span>
-                <span>R$ ${u.balance.toFixed(2)}</span>
-            </li>`;
-        });
-    });
 }
 
-function listenToTransactions(uid) {
-    const q = query(
-        collection(db, "transactions"), 
-        where("participants", "array-contains", uid),
-        orderBy("timestamp", "desc"),
-        limit(20)
-    );
-
-    onSnapshot(q, (snapshot) => {
-        const list = document.getElementById('transaction-list');
-        list.innerHTML = "";
-        snapshot.forEach(doc => {
-            const data = doc.data();
-            const isSender = data.senderId === uid;
-            const li = document.createElement('li');
-            li.style.cssText = "display:flex; justify-content:space-between; padding:10px; border-bottom:1px solid rgba(255,255,255,0.1);";
-            li.innerHTML = `
-                <span>${isSender ? 'Para: ' + data.receiverName : 'De: ' + data.senderName}</span>
-                <span style="color: ${isSender ? '#ff7675' : '#55efc4'}">
-                    ${isSender ? '-' : '+'} R$ ${data.amount.toFixed(2)}
-                </span>
-            `;
-            list.appendChild(li);
+// Função para o Admin alterar a taxa
+window.updateTaxRate = async () => {
+    const inputVal = parseFloat(document.getElementById('new-tax-rate').value);
+    if(isNaN(inputVal) || inputVal < 0 || inputVal > 50) {
+        return showToast("Taxa inválida (0 a 50%)", "error");
+    }
+    const newRate = inputVal / 100; // Converte 5 para 0.05
+    
+    try {
+        await updateDoc(doc(db, "users", CITY_HALL_ID), {
+            customTax: newRate
         });
-    });
-}
+        showToast(`Imposto atualizado para ${inputVal}%`);
+    } catch (e) {
+        showToast("Erro: Você não tem permissão ou ID da prefeitura incorreto.", "error");
+    }
+};
 
-// --- RESOLUÇÃO DE ID (Short ID -> Real UID) ---
+// --- TRANSAÇÕES (CORRIGIDO) ---
 async function getUidFromShortId(shortId) {
     const q = query(collection(db, "users"), where("shortId", "==", shortId));
     const snapshot = await getDocs(q);
@@ -222,101 +174,116 @@ async function getUidFromShortId(shortId) {
     return { uid: snapshot.docs[0].id, data: snapshot.docs[0].data() };
 }
 
-// --- TRANSAÇÃO ---
+// Transferência Manual
+document.getElementById('transfer-form').addEventListener('submit', async (e) => {
+    e.preventDefault(); // Impede recarregar a página
+    const shortId = document.getElementById('dest-id').value.toUpperCase().trim();
+    const amt = parseFloat(document.getElementById('amount').value);
+    
+    // Desabilita botão para evitar duplo clique
+    const btn = e.target.querySelector('button');
+    btn.disabled = true;
+    btn.innerText = "Processando...";
+    
+    await processTransaction(shortId, amt);
+    
+    btn.disabled = false;
+    btn.innerText = "Confirmar Envio";
+});
+
 async function processTransaction(receiverShortId, amount) {
-    if (!currentUserData) return;
+    if (!currentUserData) return showToast("Erro: Usuário não carregado", "error");
     if (amount <= 0) return showToast("Valor inválido", "error");
 
     try {
-        // 1. Achar o UID real baseado no ID Curto
-        const receiverData = await getUidFromShortId(receiverShortId);
-        
-        if (!receiverData) throw "ID do destinatário não encontrado!";
-        if (receiverData.uid === currentUserData.uid) throw "Não pode enviar para si mesmo";
+        const receiverInfo = await getUidFromShortId(receiverShortId);
+        if (!receiverInfo) throw new Error("ID Destinatário não encontrado!");
+        if (receiverInfo.uid === currentUserData.uid) throw new Error("Você não pode enviar para si mesmo.");
 
-        const senderRef = doc(db, "users", currentUserData.uid);
-        const receiverRef = doc(db, "users", receiverData.uid);
-        const cityHallRef = doc(db, "users", CITY_HALL_ID);
-
-        const tax = amount * TAX_RATE;
+        const tax = amount * currentTaxRate;
         const totalDeduction = amount + tax;
 
+        // Executa a transação atômica
         await runTransaction(db, async (transaction) => {
+            // Lê remetente
+            const senderRef = doc(db, "users", currentUserData.uid);
             const senderDoc = await transaction.get(senderRef);
-            if (!senderDoc.exists()) throw "Erro no remetente";
+            if (!senderDoc.exists()) throw "Remetente não existe!";
 
             const senderBalance = senderDoc.data().balance;
             if (senderBalance < totalDeduction) throw "Saldo insuficiente (Valor + Taxa)";
-            
-            const receiverDoc = await transaction.get(receiverRef); // Garante leitura atualizada
 
-            // Debita User
+            // Lê destinatário
+            const receiverRef = doc(db, "users", receiverInfo.uid);
+            const receiverDoc = await transaction.get(receiverRef);
+            if (!receiverDoc.exists()) throw "Destinatário inválido!";
+
+            // Processa valores
             transaction.update(senderRef, { balance: senderBalance - totalDeduction });
-            // Crédita Destino
             transaction.update(receiverRef, { balance: receiverDoc.data().balance + amount });
-            
-            // Crédita Prefeitura (Se existir conta configurada)
-            const cityHallDoc = await transaction.get(cityHallRef);
-            if (cityHallDoc.exists()) {
-                transaction.update(cityHallRef, { balance: cityHallDoc.data().balance + tax });
+
+            // Envia imposto para Prefeitura (se existir)
+            if (CITY_HALL_ID && CITY_HALL_ID.length > 5) {
+                const cityRef = doc(db, "users", CITY_HALL_ID);
+                const cityDoc = await transaction.get(cityRef);
+                if (cityDoc.exists()) {
+                    transaction.update(cityRef, { balance: cityDoc.data().balance + tax });
+                }
             }
 
-            // Extrato
+            // Registra histórico
             const txRef = doc(collection(db, "transactions"));
             transaction.set(txRef, {
                 senderId: currentUserData.uid,
                 senderName: currentUserData.name,
-                receiverId: receiverData.uid,
-                receiverName: receiverData.data.name,
+                receiverId: receiverInfo.uid,
+                receiverName: receiverInfo.data.name,
                 amount: amount,
                 tax: tax,
-                participants: [currentUserData.uid, receiverData.uid],
+                taxRate: currentTaxRate,
+                participants: [currentUserData.uid, receiverInfo.uid],
                 timestamp: serverTimestamp()
             });
         });
-        
-        showToast("Transferência com Sucesso!");
+
+        showToast("✅ Transferência realizada com sucesso!");
+        document.getElementById('transfer-form').reset();
+        document.getElementById('tax-calc').innerText = "R$ 0,00";
         navTo('dashboard');
+
     } catch (e) {
-        console.error(e);
-        showToast(e, "error");
+        console.error("Erro na transação:", e);
+        showToast("Falha: " + (e.message || e), "error");
     }
 }
 
-// Transferência Manual
-document.getElementById('transfer-form').addEventListener('submit', (e) => {
-    e.preventDefault();
-    const shortId = document.getElementById('dest-id').value.toUpperCase();
-    const amt = parseFloat(document.getElementById('amount').value);
-    processTransaction(shortId, amt);
-});
-
-// Calculadora
+// Calculadora de Taxa Visual
 document.getElementById('amount').addEventListener('input', (e) => {
     const val = parseFloat(e.target.value) || 0;
-    document.getElementById('tax-calc').innerText = `R$ ${(val * TAX_RATE).toFixed(2)}`;
+    document.getElementById('tax-calc').innerText = `R$ ${(val * currentTaxRate).toFixed(2)}`;
 });
 
-// --- QR CODE ---
-
-// Gerar QR (Agora com Short ID)
+// --- QR CODE (CORRIGIDO VIA API) ---
 window.generateQR = () => {
     const amt = document.getElementById('qr-amount').value;
-    const container = document.getElementById('qrcode-container');
-    container.innerHTML = "";
+    const img = document.getElementById('qr-image');
     
-    if(!amt || amt <= 0) return;
+    if(!amt || amt <= 0) {
+        img.style.display = 'none';
+        return;
+    }
 
-    // Payload agora usa o Short ID para facilitar leitura humana se precisar
-    const payload = JSON.stringify({
-        sid: currentUserData.shortId, 
-        amt: parseFloat(amt)
-    });
-
-    new QRCode(container, { text: payload, width: 180, height: 180 });
+    // Cria JSON com ID Curto e Valor
+    const payload = JSON.stringify({ sid: currentUserData.shortId, amt: parseFloat(amt) });
+    
+    // Usa API do qrserver (Gera imagem real)
+    const apiUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(payload)}`;
+    
+    img.src = apiUrl;
+    img.style.display = 'block';
 };
 
-// Scanner
+// Scanner (Mantido, mas com logs de erro)
 function startScanner() {
     html5QrcodeScanner = new Html5Qrcode("reader");
     html5QrcodeScanner.start(
@@ -327,22 +294,30 @@ function startScanner() {
                 const data = JSON.parse(decodedText);
                 if(data.sid && data.amt) {
                     stopScanner();
-                    
-                    // Busca nome do dono do QR Code
                     const rData = await getUidFromShortId(data.sid);
-                    
-                    document.getElementById('scan-result').classList.remove('hidden');
-                    document.getElementById('scan-amt').innerText = data.amt;
-                    document.getElementById('scan-to-name').innerText = rData ? rData.data.name : "Desconhecido";
-                    document.getElementById('scan-to-id').innerText = data.sid;
-                    
-                    document.getElementById('confirm-pay-btn').onclick = () => processTransaction(data.sid, data.amt);
-                    vibrate();
+                    if(rData) {
+                        document.getElementById('scan-result').classList.remove('hidden');
+                        document.getElementById('scan-amt').innerText = data.amt;
+                        document.getElementById('scan-to-name').innerText = rData.data.name;
+                        
+                        // Configura botão de confirmar
+                        const btn = document.getElementById('confirm-pay-btn');
+                        // Remove listeners antigos para evitar duplo pagamento
+                        const newBtn = btn.cloneNode(true);
+                        btn.parentNode.replaceChild(newBtn, btn);
+                        
+                        newBtn.addEventListener('click', () => processTransaction(data.sid, data.amt));
+                    } else {
+                        showToast("Usuário do QR não encontrado", "error");
+                        startScanner();
+                    }
                 }
-            } catch (e) { showToast("QR inválido", "error"); }
+            } catch (e) { console.log("Lendo..."); }
         },
         (errorMessage) => {}
-    ).catch(() => showToast("Erro Câmera (Use HTTPS)", "error"));
+    ).catch(err => {
+        showToast("Erro na câmera. Verifique se o site tem permissão.", "error");
+    });
 }
 
 function stopScanner() {
@@ -355,3 +330,38 @@ window.resetScanner = () => {
     document.getElementById('scan-result').classList.add('hidden');
     startScanner();
 };
+
+// Funções de Admin
+function loadAdminData() {
+    onSnapshot(doc(db, "users", CITY_HALL_ID), (docSnap) => {
+        if(docSnap.exists()) {
+            document.getElementById('city-hall-balance').innerText = `R$ ${docSnap.data().balance.toFixed(2)}`;
+        }
+    });
+
+    const q = query(collection(db, "users"), limit(10));
+    onSnapshot(q, (snap) => {
+        const list = document.getElementById('admin-user-list');
+        list.innerHTML = "";
+        snap.forEach(d => {
+            const u = d.data();
+            list.innerHTML += `<li>${u.name} (${u.shortId || '-'}) - R$ ${u.balance.toFixed(2)}</li>`;
+        });
+    });
+}
+
+function listenToTransactions(uid) {
+    const q = query(collection(db, "transactions"), where("participants", "array-contains", uid), limit(20));
+    onSnapshot(q, (s) => {
+        const l = document.getElementById('transaction-list');
+        l.innerHTML = "";
+        s.forEach(d => {
+            const t = d.data();
+            const isS = t.senderId === uid;
+            l.innerHTML += `<li style="border-bottom:1px solid #333; padding:5px; display:flex; justify-content:space-between;">
+                <span>${isS ? 'Enviou' : 'Recebeu'}</span>
+                <span style="color:${isS?'red':'green'}">${isS?'-':'+'} R$ ${t.amount}</span>
+            </li>`;
+        });
+    });
+}

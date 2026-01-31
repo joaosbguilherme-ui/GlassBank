@@ -3,9 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GlassBank - Next Gen</title>
+    <title>GlassBank - Sistema Financeiro</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
     <link rel="stylesheet" href="style.css">
 </head>
@@ -43,7 +42,7 @@
         <section id="dashboard-section" class="hidden">
             <header>
                 <div class="user-info">
-                    <img src="https://ui-avatars.com/api/?name=User" id="user-avatar" alt="Avatar">
+                    <img src="" id="user-avatar" alt="Avatar">
                     <div>
                         <h3 id="user-name">Carregando...</h3>
                         <span id="user-role" class="badge">Usuário</span>
@@ -76,13 +75,24 @@
 
         <section id="admin-panel-section" class="hidden">
             <button class="back-btn" onclick="navTo('dashboard')"><i class="fas fa-arrow-left"></i> Voltar</button>
-            <h2>Gestão do Banco</h2>
+            <h2>Gestão Municipal</h2>
+            
             <div class="balance-card" style="background: rgba(0,0,0,0.3);">
-                <p>Caixa da Prefeitura (2%)</p>
+                <p>Caixa da Prefeitura</p>
                 <h1 id="city-hall-balance">R$ 0,00</h1>
             </div>
+
+            <div class="glass-card" style="margin: 15px 0;">
+                <label>Taxa de Imposto Atual (%)</label>
+                <div style="display: flex; gap: 10px; margin-top: 5px;">
+                    <input type="number" id="new-tax-rate" placeholder="Ex: 5" style="width: 70px;">
+                    <button onclick="updateTaxRate()" style="width: auto;">Alterar Taxa</button>
+                </div>
+                <p><small>Atual: <span id="current-tax-display">2</span>%</small></p>
+            </div>
+
             <h3>Usuários Recentes</h3>
-            <ul id="admin-user-list" style="list-style: none; margin-top:10px;"></ul>
+            <ul id="admin-user-list" class="glass-list"></ul>
         </section>
 
         <section id="transfer-section" class="hidden">
@@ -91,7 +101,7 @@
             <form id="transfer-form">
                 <input type="text" id="dest-id" placeholder="ID do Destinatário (ex: 12B75T)" required maxlength="6" style="text-transform: uppercase;">
                 <input type="number" id="amount" placeholder="Valor (R$)" min="0.01" step="0.01" required>
-                <p class="tax-info">Imposto municipal (2%): <span id="tax-calc">R$ 0,00</span></p>
+                <p class="tax-info">Imposto (<span id="tax-percent-display">2</span>%): <span id="tax-calc">R$ 0,00</span></p>
                 <button type="submit">Confirmar Envio</button>
             </form>
         </section>
@@ -100,7 +110,11 @@
             <button class="back-btn" onclick="navTo('dashboard')"><i class="fas fa-arrow-left"></i> Voltar</button>
             <h2>Cobrar via QR</h2>
             <input type="number" id="qr-amount" placeholder="Valor a cobrar" oninput="generateQR()">
-            <div id="qrcode-container"></div>
+            
+            <div style="text-align: center; margin-top: 20px;">
+                <img id="qr-image" src="" alt="QR Code aparecerá aqui" style="display:none; border-radius: 10px; max-width: 200px;">
+            </div>
+            
             <p>Seu ID está no código</p>
         </section>
 
@@ -110,7 +124,6 @@
             <div id="reader" width="300px"></div>
             <div id="scan-result" class="hidden">
                 <p>Pagar <strong>R$ <span id="scan-amt"></span></strong> para <span id="scan-to-name"></span>?</p>
-                <p style="font-size:0.8em">ID: <span id="scan-to-id"></span></p>
                 <button id="confirm-pay-btn">Confirmar Pagamento</button>
                 <button onclick="resetScanner()" class="secondary">Cancelar</button>
             </div>
