@@ -3,13 +3,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GlassBank - Next Gen</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <title>GlassBank - Ultimate</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
+
+    <audio id="snd-success" src="https://assets.mixkit.co/active_storage/sfx/2000/2000-preview.mp3"></audio>
+    <audio id="snd-error" src="https://assets.mixkit.co/active_storage/sfx/2003/2003-preview.mp3"></audio>
+    <audio id="snd-click" src="https://assets.mixkit.co/active_storage/sfx/2568/2568-preview.mp3"></audio>
 
     <div class="background-blobs">
         <div class="blob blob-1"></div>
@@ -19,10 +22,45 @@
 
     <div id="toast-container"></div>
 
+    <div id="pin-modal" class="modal-overlay hidden">
+        <div class="modal-glass">
+            <h3>Segurança</h3>
+            <p>Digite seu PIN de 4 dígitos para confirmar</p>
+            <input type="password" id="confirm-pin-input" maxlength="4" placeholder="****" style="text-align:center; font-size: 20px; letter-spacing: 5px;">
+            <div class="modal-actions">
+                <button id="confirm-pin-btn">Confirmar</button>
+                <button class="secondary" onclick="closeModal('pin-modal')">Cancelar</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="receipt-modal" class="modal-overlay hidden">
+        <div class="modal-glass receipt-style">
+            <div class="receipt-header">
+                <i class="fas fa-check-circle"></i>
+                <h2>Comprovante</h2>
+            </div>
+            <div class="receipt-body">
+                <p>Valor</p>
+                <h1 id="rcpt-amount">R$ 0,00</h1>
+                <hr>
+                <div class="row"><span>Data:</span> <span id="rcpt-date">-</span></div>
+                <div class="row"><span>De:</span> <span id="rcpt-sender">-</span></div>
+                <div class="row"><span>Para:</span> <span id="rcpt-receiver">-</span></div>
+                <div class="row"><span>ID:</span> <span id="rcpt-id" style="font-size:0.8em">-</span></div>
+            </div>
+            <button onclick="closeModal('receipt-modal')">Fechar</button>
+        </div>
+    </div>
+
     <div class="app-container glass">
         
         <section id="auth-section" class="active-section">
-            <h1>GlassBank <i class="fas fa-bolt"></i></h1>
+            <div class="logo-area">
+                <h1>GlassBank</h1>
+                <p>Next Gen Finance</p>
+            </div>
+            
             <div class="auth-tabs">
                 <button onclick="toggleAuth('login')" class="active">Login</button>
                 <button onclick="toggleAuth('register')">Cadastro</button>
@@ -32,6 +70,8 @@
                 <input type="text" id="fullname" placeholder="Nome Completo" style="display:none;">
                 <input type="email" id="email" placeholder="E-mail" required>
                 <input type="password" id="password" placeholder="Senha" required>
+                <input type="password" id="reg-pin" placeholder="Crie um PIN (4 números)" maxlength="4" pattern="\d{4}" style="display:none;">
+                
                 <select id="role-select" style="display:none;">
                     <option value="user">Usuário Comum</option>
                     <option value="merchant">Vendedor (PJ)</option>
@@ -43,75 +83,119 @@
         <section id="dashboard-section" class="hidden">
             <header>
                 <div class="user-info">
-                    <img src="https://ui-avatars.com/api/?name=User" id="user-avatar" alt="Avatar">
+                    <img src="" id="user-avatar" alt="Avatar">
                     <div>
                         <h3 id="user-name">Carregando...</h3>
                         <span id="user-role" class="badge">Usuário</span>
                     </div>
                 </div>
-                <button id="logout-btn"><i class="fas fa-sign-out-alt"></i></button>
+                <button id="logout-btn" class="icon-btn"><i class="fas fa-power-off"></i></button>
             </header>
 
             <div class="balance-card glass-card">
-                <p>Saldo Disponível</p>
+                <p>Saldo Atual</p>
                 <h1 id="user-balance">R$ 0,00</h1>
-                <p class="account-id">ID: <span id="user-short-id" style="color:#f1c40f; font-weight:bold;">...</span></p>
+                <div class="card-footer">
+                    <p class="account-id">ID: <span id="user-short-id">...</span></p>
+                    <span id="loan-indicator" class="hiddenBadge">EMPRÉSTIMO ATIVO</span>
+                </div>
             </div>
 
             <div class="actions-grid">
-                <button onclick="navTo('transfer')"><i class="fas fa-paper-plane"></i> Transferir</button>
-                <button onclick="navTo('qr-gen')"><i class="fas fa-qrcode"></i> Cobrar</button>
-                <button onclick="navTo('qr-scan')"><i class="fas fa-camera"></i> Pagar</button>
-                <button id="admin-btn" class="hidden" onclick="navTo('admin-panel')"><i class="fas fa-user-shield"></i> Admin</button>
+                <button onclick="navTo('transfer')"><div class="icon-box"><i class="fas fa-paper-plane"></i></div> Transferir</button>
+                <button onclick="navTo('qr-gen')"><div class="icon-box"><i class="fas fa-qrcode"></i></div> Cobrar</button>
+                <button onclick="navTo('qr-scan')"><div class="icon-box"><i class="fas fa-camera"></i></div> Pagar</button>
+                <button onclick="navTo('loans')"><div class="icon-box"><i class="fas fa-hand-holding-usd"></i></div> Empréstimo</button>
             </div>
             
-            <button class="secondary" onclick="toggleHistory()" style="margin-top: 15px;">Ver Extrato</button>
+            <button id="admin-btn" class="hidden wide-btn" onclick="navTo('admin-panel')"><i class="fas fa-shield-alt"></i> Painel Prefeitura</button>
 
-            <div id="history-panel" class="glass-panel hidden">
-                <h3>Histórico</h3>
+            <div class="history-preview">
+                <h3>Últimas Transações</h3>
                 <ul id="transaction-list"></ul>
-                <button class="close-panel" onclick="toggleHistory()">Fechar</button>
             </div>
-        </section>
-
-        <section id="admin-panel-section" class="hidden">
-            <button class="back-btn" onclick="navTo('dashboard')"><i class="fas fa-arrow-left"></i> Voltar</button>
-            <h2>Gestão do Banco</h2>
-            <div class="balance-card" style="background: rgba(0,0,0,0.3);">
-                <p>Caixa da Prefeitura (2%)</p>
-                <h1 id="city-hall-balance">R$ 0,00</h1>
-            </div>
-            <h3>Usuários Recentes</h3>
-            <ul id="admin-user-list" style="list-style: none; margin-top:10px;"></ul>
         </section>
 
         <section id="transfer-section" class="hidden">
-            <button class="back-btn" onclick="navTo('dashboard')"><i class="fas fa-arrow-left"></i> Voltar</button>
-            <h2>Transferência</h2>
+            <button class="back-btn" onclick="navTo('dashboard')"><i class="fas fa-chevron-left"></i> Voltar</button>
+            <h2>Transferir</h2>
             <form id="transfer-form">
-                <input type="text" id="dest-id" placeholder="ID do Destinatário (ex: 12B75T)" required maxlength="6" style="text-transform: uppercase;">
-                <input type="number" id="amount" placeholder="Valor (R$)" min="0.01" step="0.01" required>
-                <p class="tax-info">Imposto municipal (2%): <span id="tax-calc">R$ 0,00</span></p>
-                <button type="submit">Confirmar Envio</button>
+                <div class="input-group">
+                    <i class="fas fa-user-tag"></i>
+                    <input type="text" id="dest-id" placeholder="ID (Ex: 12A34B)" required maxlength="6" style="text-transform: uppercase;">
+                </div>
+                <div class="input-group">
+                    <i class="fas fa-dollar-sign"></i>
+                    <input type="number" id="amount" placeholder="0.00" min="0.01" step="0.01" required>
+                </div>
+                
+                <div class="info-box">
+                    <p>Taxa Municipal: <span id="tax-display">0%</span></p>
+                    <p>Total a debitar: <strong id="total-debit">R$ 0,00</strong></p>
+                </div>
+                <p class="warning-text hidden" id="limit-warning">⚠️ Acima de 30k em 15min. Bloqueado.</p>
+
+                <button type="submit">Continuar</button>
             </form>
         </section>
 
+        <section id="loans-section" class="hidden">
+            <button class="back-btn" onclick="navTo('dashboard')"><i class="fas fa-chevron-left"></i> Voltar</button>
+            <h2>Empréstimo Rápido</h2>
+            <div class="glass-card">
+                <p>Limite Disponível</p>
+                <h1 id="loan-limit-display">R$ 5.000,00</h1>
+                <p style="font-size: 0.8em; opacity: 0.7;">Juros de 5% a cada 10 min sobre saldo negativo.</p>
+            </div>
+            <input type="number" id="loan-amount-input" placeholder="Quanto você precisa?">
+            <button onclick="takeLoan()">Solicitar Empréstimo</button>
+        </section>
+
+        <section id="admin-panel-section" class="hidden">
+            <button class="back-btn" onclick="navTo('dashboard')"><i class="fas fa-chevron-left"></i> Voltar</button>
+            <h2>Gestão Municipal</h2>
+            
+            <div class="balance-card admin-card">
+                <p>Cofre da Prefeitura</p>
+                <h1 id="city-hall-balance">R$ 0,00</h1>
+            </div>
+
+            <div class="admin-tools">
+                <div class="tool-item">
+                    <label>Taxa de Imposto (%)</label>
+                    <div class="row">
+                        <input type="number" id="admin-tax-rate" placeholder="2">
+                        <button onclick="updateGlobalTax()">Salvar</button>
+                    </div>
+                </div>
+                <div class="tool-item">
+                    <label>Ações de Usuário</label>
+                    <input type="text" id="ban-user-id" placeholder="ID Curto do Usuário">
+                    <button class="danger-btn" onclick="banUser()">BANIR USUÁRIO</button>
+                </div>
+            </div>
+        </section>
+
         <section id="qr-gen-section" class="hidden">
-            <button class="back-btn" onclick="navTo('dashboard')"><i class="fas fa-arrow-left"></i> Voltar</button>
-            <h2>Cobrar via QR</h2>
-            <input type="number" id="qr-amount" placeholder="Valor a cobrar" oninput="generateQR()">
-            <div id="qrcode-container"></div>
-            <p>Seu ID está no código</p>
+            <button class="back-btn" onclick="navTo('dashboard')"><i class="fas fa-chevron-left"></i> Voltar</button>
+            <h2>Cobrar</h2>
+            <input type="number" id="qr-amount" placeholder="Valor" oninput="generateQR()">
+            
+            <div class="qr-frame">
+                <img id="qr-image" src="" alt="QR Code" style="display:none;">
+                <p id="qr-placeholder">Digite um valor para gerar</p>
+            </div>
         </section>
 
         <section id="qr-scan-section" class="hidden">
-            <button class="back-btn" onclick="navTo('dashboard')"><i class="fas fa-arrow-left"></i> Voltar</button>
-            <h2>Pagar via QR</h2>
-            <div id="reader" width="300px"></div>
-            <div id="scan-result" class="hidden">
+            <button class="back-btn" onclick="navTo('dashboard')"><i class="fas fa-chevron-left"></i> Voltar</button>
+            <h2>Escanear</h2>
+            <div id="reader"></div>
+            
+            <div id="scan-result" class="modal-glass hidden" style="position: absolute; top: 20%; left: 5%; width: 90%;">
+                <h3>Confirmação</h3>
                 <p>Pagar <strong>R$ <span id="scan-amt"></span></strong> para <span id="scan-to-name"></span>?</p>
-                <p style="font-size:0.8em">ID: <span id="scan-to-id"></span></p>
-                <button id="confirm-pay-btn">Confirmar Pagamento</button>
+                <button id="scan-pay-btn">Pagar</button>
                 <button onclick="resetScanner()" class="secondary">Cancelar</button>
             </div>
         </section>
