@@ -24,7 +24,7 @@ let pendingTransaction = null;
 
 // =========================================================
 // ⚠️ CERTIFIQUE-SE QUE O UID DA PREFEITURA ESTÁ CORRETO AQUI
-const CITY_HALL_ID = "COLE_O_UID_DA_PREFEITURA_AQUI"; 
+const CITY_HALL_ID = "vTFqk1ZX8NfwzuE4ZmJKXnfoI9r1"; 
 // =========================================================
 
 // --- SONS ---
