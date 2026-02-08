@@ -24,7 +24,7 @@ let pendingTransaction = null; // Armazena dados enquanto aguarda PIN
 
 // =========================================================
 // ⚠️ CONFIGURE AQUI O UID DA CONTA DA PREFEITURA
-const CITY_HALL_ID = "COLE_O_UID_DA_PREFEITURA_AQUI"; 
+const CITY_HALL_ID = "DpHkOPXDFaOHego7eshsvsEU5Gv2"; 
 // =========================================================
 
 // --- SONS ---
