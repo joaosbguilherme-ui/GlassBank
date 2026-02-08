@@ -23,7 +23,7 @@ let html5QrcodeScanner = null;
 let pendingTransaction = null; 
 
 // =========================================================
-// ⚠️ CONFIGURE AQUI O UID DA CONTA DA PREFEITURA
+// ⚠️ CERTIFIQUE-SE QUE O UID DA PREFEITURA ESTÁ CORRETO AQUI
 const CITY_HALL_ID = "COLE_O_UID_DA_PREFEITURA_AQUI"; 
 // =========================================================
 
@@ -208,7 +208,7 @@ function syncGlobalTax() {
 }
 
 function initAdminPanel() {
-    // Funções extras de admin se necessário
+    // Funções extras de admin
 }
 
 window.banUser = async () => {
@@ -224,14 +224,13 @@ window.banUser = async () => {
     showToast("Usuário BANIDO.");
 };
 
-// --- TRANSAÇÃO (CORRIGIDA) ---
+// --- TRANSAÇÃO (CORRIGIDA - LÓGICA DE LEITURA ANTES DA ESCRITA) ---
 
-// 1. Botão Transferir (Com Loading)
+// 1. Botão Transferir (Com Verificações Robustas)
 const transferForm = document.getElementById('transfer-form');
 transferForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     
-    // UI Feedback
     const submitBtn = transferForm.querySelector('button[type="submit"]');
     const originalText = submitBtn.innerText;
     submitBtn.innerText = "Verificando...";
@@ -243,7 +242,7 @@ transferForm.addEventListener('submit', async (e) => {
     try {
         if(amount <= 0) throw new Error("Valor inválido");
 
-        // Checa limite de 30k (Try/Catch para não travar se falhar a rede)
+        // Verificação de Limite (Try/Catch para não travar se o índice faltar)
         try {
             const recentTotal = await checkTransactionLimit(currentUser.uid);
             if(recentTotal + amount > 30000) {
@@ -252,10 +251,10 @@ transferForm.addEventListener('submit', async (e) => {
             }
         } catch (limitErr) {
             if(limitErr.message.includes("Limite")) throw limitErr;
-            console.log("Aviso: Verificação de limite falhou (provavelmente falta índice), prosseguindo.");
+            console.warn("Aviso: Pulei a verificação de limite (falta índice ou erro de rede).");
         }
 
-        // Tudo OK, pede PIN
+        // Se passou, armazena e pede PIN
         pendingTransaction = { destId, amount };
         document.getElementById('pin-modal').classList.remove('hidden');
         document.getElementById('confirm-pin-input').value = "";
@@ -264,7 +263,6 @@ transferForm.addEventListener('submit', async (e) => {
     } catch (err) {
         showToast(err.message, "error");
     } finally {
-        // Restaura botão
         submitBtn.innerText = originalText;
         submitBtn.disabled = false;
     }
@@ -283,7 +281,6 @@ document.getElementById('confirm-pin-btn').addEventListener('click', async () =>
     btn.innerText = "Enviando...";
     btn.disabled = true;
 
-    // Executa
     await executeTransaction(pendingTransaction.destId, pendingTransaction.amount);
     
     btn.innerText = "Confirmar";
@@ -291,10 +288,10 @@ document.getElementById('confirm-pin-btn').addEventListener('click', async () =>
     closeModal('pin-modal');
 });
 
-// 3. Execução no DB
+// 3. Execução no DB (CORRIGIDO AQUI)
 async function executeTransaction(shortId, amount) {
     try {
-        // Busca Destinatário
+        // Primeiro: Buscamos QUEM vai receber para ter o UID
         const q = query(collection(db, "users"), where("shortId", "==", shortId));
         const receiverSnap = await getDocs(q);
         
@@ -308,40 +305,50 @@ async function executeTransaction(shortId, amount) {
         const tax = amount * currentTaxRate;
         const totalDed = amount + tax;
 
+        // Inicia Transação Segura
         await runTransaction(db, async (transaction) => {
+            // ==========================================
+            // PASSO 1: LER TUDO (LEITURAS OBRIGATÓRIAS ANTES)
+            // ==========================================
             const senderRef = doc(db, "users", currentUser.uid);
-            const senderDoc = await transaction.get(senderRef);
-            
-            if(!senderDoc.exists()) throw "Erro crítico: Remetente não encontrado.";
-            
-            const currentBalance = senderDoc.data().balance;
-            if(currentBalance < totalDed) throw "Saldo insuficiente (Valor + Taxa).";
-
             const receiverRef = doc(db, "users", receiverUid);
             const cityRef = doc(db, "users", CITY_HALL_ID);
-            
-            // Leitura Receiver
-            const rDoc = await transaction.get(receiverRef);
-            if(!rDoc.exists()) throw "Destinatário não encontrado.";
 
-            // Debita User
+            const sDoc = await transaction.get(senderRef);
+            const rDoc = await transaction.get(receiverRef);
+            const cDoc = await transaction.get(cityRef);
+
+            // ==========================================
+            // PASSO 2: VALIDAR REGRAS COM O QUE FOI LIDO
+            // ==========================================
+            if (!sDoc.exists()) throw "Remetente não encontrado.";
+            if (!rDoc.exists()) throw "Destinatário não encontrado no momento da transação.";
+            
+            const currentBalance = sDoc.data().balance;
+            if (currentBalance < totalDed) throw "Saldo insuficiente (Valor + Taxa).";
+
+            // ==========================================
+            // PASSO 3: GRAVAR TUDO (ESCRITAS)
+            // ==========================================
+            
+            // Debita Remetente
             transaction.update(senderRef, { balance: currentBalance - totalDed });
-            // Crédita Destino
+            
+            // Credita Destinatário
             transaction.update(receiverRef, { balance: rDoc.data().balance + amount });
             
-            // Crédita Prefeitura (Só se o documento existir)
-            const cDoc = await transaction.get(cityRef);
-            if(cDoc.exists()) {
+            // Credita Prefeitura (Só se a conta existir)
+            if (cDoc.exists()) {
                 transaction.update(cityRef, { balance: cDoc.data().balance + tax });
             }
             
-            // Cria Extrato
+            // Cria o Comprovante (Extrato)
             const txRef = doc(collection(db, "transactions"));
             transaction.set(txRef, {
                 senderId: currentUser.uid,
                 senderName: currentUser.name,
                 receiverId: receiverUid,
-                receiverName: receiverDoc.data().name,
+                receiverName: rDoc.data().name,
                 amount: amount,
                 tax: tax,
                 timestamp: serverTimestamp(),
@@ -349,23 +356,23 @@ async function executeTransaction(shortId, amount) {
             });
         });
 
+        // Se chegou aqui, funcionou!
         showToast("Transferência Realizada!", "success");
         navTo('dashboard');
         document.getElementById('transfer-form').reset();
 
     } catch(e) {
-        console.error(e);
+        console.error("Erro Transação:", e);
         let msg = e.message || e;
-        if(typeof msg !== 'string') msg = "Erro na transação";
+        if(typeof msg !== 'string') msg = "Erro desconhecido na transação.";
         showToast(msg, "error");
     }
 }
 
-// 4. Checagem de Limite (Otimizada)
+// 4. Checagem de Limite
 async function checkTransactionLimit(uid) {
+    // Se o índice não existir, isso vai falhar, mas o Try/Catch lá em cima garante que o app não pare.
     const fifteenMinsAgo = new Date(Date.now() - 15 * 60 * 1000);
-    // Nota: Essa query precisa de um índice composto no Firebase.
-    // Se não existir, vai gerar erro no console (link para criar).
     const q = query(
         collection(db, "transactions"),
         where("senderId", "==", uid),
@@ -378,7 +385,7 @@ async function checkTransactionLimit(uid) {
     return total;
 }
 
-// --- LISTA E QR CODE ---
+// --- HISTÓRICO E COMPROVANTE ---
 function listenToTransactions(uid) {
     const q = query(
         collection(db, "transactions"), 
@@ -387,6 +394,7 @@ function listenToTransactions(uid) {
         limit(20)
     );
 
+    // Listener para atualizar a lista em tempo real
     onSnapshot(q, (snap) => {
         const list = document.getElementById('transaction-list');
         list.innerHTML = "";
@@ -407,6 +415,9 @@ function listenToTransactions(uid) {
             li.onclick = () => showReceipt(t, docSnap.id);
             list.appendChild(li);
         });
+    }, (error) => {
+        // Loga erro de índice se acontecer aqui também
+        console.log("Erro no histórico (provável falta de índice):", error);
     });
 }
 
@@ -419,6 +430,7 @@ function showReceipt(data, id) {
     document.getElementById('rcpt-id').innerText = id;
 }
 
+// --- QR CODE (SCANNER E GERADOR) ---
 window.generateQR = () => {
     const amt = document.getElementById('qr-amount').value;
     const img = document.getElementById('qr-image');
@@ -429,7 +441,6 @@ window.generateQR = () => {
     img.style.display = 'block'; ph.style.display = 'none';
 };
 
-// Scanner simplificado
 function startScanner() {
     html5QrcodeScanner = new Html5Qrcode("reader");
     html5QrcodeScanner.start({ facingMode: "environment" }, { fps: 10, qrbox: 250 },
