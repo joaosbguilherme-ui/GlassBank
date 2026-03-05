@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GlassBank - Ultimate</title>
+    <title>GlassBank - Economy Sim</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
     <link rel="stylesheet" href="style.css">
@@ -25,7 +25,7 @@
     <div id="pin-modal" class="modal-overlay hidden">
         <div class="modal-glass">
             <h3>Segurança</h3>
-            <p>Digite seu PIN de 4 dígitos para confirmar</p>
+            <p>Digite seu PIN de 4 dígitos</p>
             <input type="password" id="confirm-pin-input" maxlength="4" placeholder="****" style="text-align:center; font-size: 20px; letter-spacing: 5px;">
             <div class="modal-actions">
                 <button id="confirm-pin-btn">Confirmar</button>
@@ -47,7 +47,7 @@
                 <div class="row"><span>Data:</span> <span id="rcpt-date">-</span></div>
                 <div class="row"><span>De:</span> <span id="rcpt-sender">-</span></div>
                 <div class="row"><span>Para:</span> <span id="rcpt-receiver">-</span></div>
-                <div class="row"><span>ID:</span> <span id="rcpt-id" style="font-size:0.8em">-</span></div>
+                <div class="row"><span>Tipo:</span> <span id="rcpt-type">-</span></div>
             </div>
             <button onclick="closeModal('receipt-modal')">Fechar</button>
         </div>
@@ -58,23 +58,20 @@
         <section id="auth-section" class="active-section">
             <div class="logo-area">
                 <h1>GlassBank</h1>
-                <p>Next Gen Finance</p>
+                <p>Economia Real Simulada</p>
             </div>
-            
             <div class="auth-tabs">
                 <button onclick="toggleAuth('login')" class="active">Login</button>
                 <button onclick="toggleAuth('register')">Cadastro</button>
             </div>
-            
             <form id="auth-form">
                 <input type="text" id="fullname" placeholder="Nome Completo" style="display:none;">
                 <input type="email" id="email" placeholder="E-mail" required>
                 <input type="password" id="password" placeholder="Senha" required>
                 <input type="password" id="reg-pin" placeholder="Crie um PIN (4 números)" maxlength="4" pattern="\d{4}" style="display:none;">
-                
                 <select id="role-select" style="display:none;">
-                    <option value="user">Usuário Comum</option>
-                    <option value="merchant">Vendedor (PJ)</option>
+                    <option value="user">Cidadão</option>
+                    <option value="merchant">Comércio (PJ)</option>
                 </select>
                 <button type="submit" id="auth-btn">Entrar</button>
             </form>
@@ -89,66 +86,96 @@
                         <span id="user-role" class="badge">Usuário</span>
                     </div>
                 </div>
-                <button id="logout-btn" class="icon-btn"><i class="fas fa-power-off"></i></button>
+                <div class="header-icons">
+                    <button class="icon-only" onclick="checkNotifications()"><i class="fas fa-bell"></i></button>
+                    <button id="logout-btn" class="icon-only"><i class="fas fa-power-off"></i></button>
+                </div>
             </header>
 
             <div class="balance-card glass-card">
-                <p>Saldo Atual</p>
+                <p>Saldo Disponível</p>
                 <h1 id="user-balance">R$ 0,00</h1>
                 <div class="card-footer">
                     <p class="account-id">ID: <span id="user-short-id">...</span></p>
-                    <span id="loan-indicator" class="hiddenBadge">EMPRÉSTIMO ATIVO</span>
+                    <span id="loan-indicator" class="hiddenBadge">DÍVIDA ATIVA</span>
+                </div>
+            </div>
+
+            <div id="daily-reward-area" class="glass-card compact hidden">
+                <div class="row">
+                    <span>🎁 Auxílio Cidadão</span>
+                    <button id="claim-reward-btn" onclick="claimDailyReward()">Resgatar</button>
                 </div>
             </div>
 
             <div class="actions-grid">
-                <button onclick="navTo('transfer')"><div class="icon-box"><i class="fas fa-paper-plane"></i></div> Transferir</button>
+                <button onclick="navTo('transfer')"><div class="icon-box"><i class="fas fa-paper-plane"></i></div> Pix</button>
                 <button onclick="navTo('qr-gen')"><div class="icon-box"><i class="fas fa-qrcode"></i></div> Cobrar</button>
                 <button onclick="navTo('qr-scan')"><div class="icon-box"><i class="fas fa-camera"></i></div> Pagar</button>
+                <button onclick="navTo('invest')"><div class="icon-box"><i class="fas fa-piggy-bank"></i></div> Investir</button>
+                <button onclick="navTo('transparency')"><div class="icon-box"><i class="fas fa-landmark"></i></div> Governo</button>
                 <button onclick="navTo('loans')"><div class="icon-box"><i class="fas fa-hand-holding-usd"></i></div> Empréstimo</button>
             </div>
             
             <button id="admin-btn" class="hidden wide-btn" onclick="navTo('admin-panel')"><i class="fas fa-shield-alt"></i> Painel Prefeitura</button>
 
             <div class="history-preview">
-                <h3>Últimas Transações</h3>
+                <h3>Extrato</h3>
+                <div class="filter-chips">
+                    <button onclick="filterHistory('all')" class="active-chip">Tudo</button>
+                    <button onclick="filterHistory('in')">Entrada</button>
+                    <button onclick="filterHistory('out')">Saída</button>
+                    <button onclick="filterHistory('tax')">Impostos</button>
+                </div>
                 <ul id="transaction-list"></ul>
             </div>
         </section>
 
-        <section id="transfer-section" class="hidden">
+        <section id="invest-section" class="hidden">
             <button class="back-btn" onclick="navTo('dashboard')"><i class="fas fa-chevron-left"></i> Voltar</button>
-            <h2>Transferir</h2>
-            <form id="transfer-form">
-                <div class="input-group">
-                    <i class="fas fa-user-tag"></i>
-                    <input type="text" id="dest-id" placeholder="ID (Ex: 12A34B)" required maxlength="6" style="text-transform: uppercase;">
+            <h2>Investimentos & Poupança</h2>
+            
+            <div class="glass-card">
+                <h3><i class="fas fa-lock"></i> Cofre (Poupança)</h3>
+                <p>Rende 0.5% a cada hora. Dinheiro aqui não pode ser transferido.</p>
+                <h1 id="savings-balance">R$ 0,00</h1>
+                <div class="row-btn">
+                    <button onclick="savingsAction('deposit')">Guardar</button>
+                    <button onclick="savingsAction('withdraw')" class="secondary">Sacar</button>
                 </div>
-                <div class="input-group">
-                    <i class="fas fa-dollar-sign"></i>
-                    <input type="number" id="amount" placeholder="0.00" min="0.01" step="0.01" required>
-                </div>
-                
-                <div class="info-box">
-                    <p>Taxa Municipal: <span id="tax-display">0%</span></p>
-                    <p>Total a debitar: <strong id="total-debit">R$ 0,00</strong></p>
-                </div>
-                <p class="warning-text hidden" id="limit-warning">⚠️ Acima de 30k em 15min. Bloqueado.</p>
+            </div>
 
-                <button type="submit">Continuar</button>
-            </form>
+            <div class="glass-card">
+                <h3><i class="fas fa-chart-line"></i> Bolsa de Valores</h3>
+                <p>Ação: <strong>GlassCoin (GLS)</strong></p>
+                <div class="stock-display">
+                    <h1 id="stock-price">R$ 0,00</h1>
+                    <span id="stock-trend" class="trend-up">▲ 0%</span>
+                </div>
+                <p>Sua carteira: <span id="user-stock-count">0</span> GLS</p>
+                <div class="row-btn">
+                    <button onclick="tradeStock('buy')">Comprar 1</button>
+                    <button onclick="tradeStock('sell')" class="danger-btn">Vender 1</button>
+                </div>
+            </div>
         </section>
 
-        <section id="loans-section" class="hidden">
+        <section id="transparency-section" class="hidden">
             <button class="back-btn" onclick="navTo('dashboard')"><i class="fas fa-chevron-left"></i> Voltar</button>
-            <h2>Empréstimo Rápido</h2>
-            <div class="glass-card">
-                <p>Limite Disponível</p>
-                <h1 id="loan-limit-display">R$ 5.000,00</h1>
-                <p style="font-size: 0.8em; opacity: 0.7;">Juros de 5% a cada 10 min sobre saldo negativo.</p>
+            <h2>Portal da Transparência</h2>
+            
+            <div class="glass-card transparent-header">
+                <p>Total Arrecadado (Impostos)</p>
+                <h1 id="total-tax-collected">R$ 0,00</h1>
+                <div class="progress-bar-container">
+                    <div class="progress-fill" style="width: 100%"></div>
+                </div>
             </div>
-            <input type="number" id="loan-amount-input" placeholder="Quanto você precisa?">
-            <button onclick="takeLoan()">Solicitar Empréstimo</button>
+
+            <h3>Votação de Orçamento</h3>
+            <p style="font-size: 0.8rem; opacity: 0.7; margin-bottom: 10px;">Se a meta de votos for atingida, a prefeitura investe o valor automaticamente.</p>
+            <div id="polls-list">
+                </div>
         </section>
 
         <section id="admin-panel-section" class="hidden">
@@ -162,46 +189,65 @@
 
             <div class="admin-tools">
                 <div class="tool-item">
-                    <label>Taxa de Imposto (%)</label>
+                    <label>Ajuste de Imposto (%)</label>
+                    <div class="slider-container">
+                        <input type="range" id="tax-slider" min="0" max="15" step="0.5" value="2">
+                        <span id="tax-value-display">2%</span>
+                    </div>
+                    <p id="tax-psychology" class="tax-status-green">Sistema Saudável</p>
+                    <button onclick="updateGlobalTax()">Aplicar Nova Taxa</button>
+                </div>
+
+                <div class="tool-item">
+                    <label>Valor do Auxílio Diário</label>
                     <div class="row">
-                        <input type="number" id="admin-tax-rate" placeholder="2">
-                        <button onclick="updateGlobalTax()">Salvar</button>
+                        <input type="number" id="admin-daily-reward" placeholder="Ex: 50">
+                        <button onclick="updateDailyReward()">Salvar</button>
                     </div>
                 </div>
+
                 <div class="tool-item">
-                    <label>Ações de Usuário</label>
-                    <input type="text" id="ban-user-id" placeholder="ID Curto do Usuário">
-                    <button class="danger-btn" onclick="banUser()">BANIR USUÁRIO</button>
+                    <label>Criar Enquete de Investimento</label>
+                    <input type="text" id="poll-title" placeholder="Ex: Reforma Hospital">
+                    <input type="number" id="poll-cost" placeholder="Custo (R$)">
+                    <input type="number" id="poll-target" placeholder="Meta de Votos">
+                    <button onclick="createPoll()">Publicar Enquete</button>
                 </div>
             </div>
+        </section>
+
+        <section id="transfer-section" class="hidden">
+            <button class="back-btn" onclick="navTo('dashboard')"><i class="fas fa-chevron-left"></i> Voltar</button>
+            <h2>Transferir</h2>
+            <form id="transfer-form">
+                <div class="input-group"><i class="fas fa-user-tag"></i><input type="text" id="dest-id" placeholder="ID (Ex: 12A34B)" required maxlength="6" style="text-transform: uppercase;"></div>
+                <div class="input-group"><i class="fas fa-dollar-sign"></i><input type="number" id="amount" placeholder="0.00" min="0.01" step="0.01" required></div>
+                <div class="info-box"><p>Taxa Municipal: <span id="tax-display">0%</span></p><p>Total: <strong id="total-debit">R$ 0,00</strong></p></div>
+                <button type="submit">Continuar</button>
+            </form>
+        </section>
+
+        <section id="loans-section" class="hidden">
+             <button class="back-btn" onclick="navTo('dashboard')"><i class="fas fa-chevron-left"></i> Voltar</button>
+             <h2>Empréstimo</h2>
+             <div class="glass-card"><p>Limite</p><h1>R$ 5.000,00</h1></div>
+             <input type="number" id="loan-amount-input" placeholder="Valor">
+             <button onclick="takeLoan()">Solicitar</button>
         </section>
 
         <section id="qr-gen-section" class="hidden">
             <button class="back-btn" onclick="navTo('dashboard')"><i class="fas fa-chevron-left"></i> Voltar</button>
             <h2>Cobrar</h2>
             <input type="number" id="qr-amount" placeholder="Valor" oninput="generateQR()">
-            
-            <div class="qr-frame">
-                <img id="qr-image" src="" alt="QR Code" style="display:none;">
-                <p id="qr-placeholder">Digite um valor para gerar</p>
-            </div>
+            <div class="qr-frame"><img id="qr-image" src="" style="display:none;"></div>
         </section>
 
         <section id="qr-scan-section" class="hidden">
             <button class="back-btn" onclick="navTo('dashboard')"><i class="fas fa-chevron-left"></i> Voltar</button>
-            <h2>Escanear</h2>
             <div id="reader"></div>
-            
-            <div id="scan-result" class="modal-glass hidden" style="position: absolute; top: 20%; left: 5%; width: 90%;">
-                <h3>Confirmação</h3>
-                <p>Pagar <strong>R$ <span id="scan-amt"></span></strong> para <span id="scan-to-name"></span>?</p>
-                <button id="scan-pay-btn">Pagar</button>
-                <button onclick="resetScanner()" class="secondary">Cancelar</button>
-            </div>
         </section>
 
     </div>
-
     <script type="module" src="script.js"></script>
 </body>
 </html>
