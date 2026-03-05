@@ -106,6 +106,28 @@ function ensureAdmin() {
     }
     return true;
 }
+
+function formatTransactionId(rawId) {
+    const clean = String(rawId || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+    return `TX${clean.slice(0, 10) || Date.now()}`;
+}
+
+function formatAuthCode(hashHex) {
+    const clean = String(hashHex || '').replace(/[^a-fA-F0-9]/g, '').toLowerCase();
+    const sized = (clean + '0000000000000000').slice(0, 16);
+    return `${sized.slice(0, 4)}-${sized.slice(4, 8)}-${sized.slice(8, 12)}-${sized.slice(12, 16)}`;
+}
+
+async function buildReceiptAuthCode(payload) {
+    const hashHex = await sha256Hex(JSON.stringify(payload));
+    return formatAuthCode(hashHex);
+}
+
+function fillText(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.innerText = value;
+}
+
 function cleanupListeners() {
     if (unsubUser) unsubUser();
     if (unsubTransactions) unsubTransactions();
@@ -882,14 +904,33 @@ function updateTransferPreview() {
     totalDebit.innerText = formatMoney(total);
 }
 
-function showTransferReceipt(amount, receiverName) {
+async function showTransferReceipt(data) {
     const modal = document.getElementById('receipt-modal');
     if (!modal) return;
-    document.getElementById('rcpt-amount').innerText = formatMoney(amount);
-    document.getElementById('rcpt-date').innerText = new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' }).format(new Date());
-    document.getElementById('rcpt-sender').innerText = currentUser?.name || '-';
-    document.getElementById('rcpt-receiver').innerText = receiverName || '-';
-    document.getElementById('rcpt-type').innerText = 'TRANSFER';
+
+    const executedAt = data.executedAt || new Date();
+    const authCode = await buildReceiptAuthCode({
+        txId: data.txId,
+        method: data.method,
+        senderId: data.senderId,
+        receiverId: data.receiverId,
+        amount: data.amount,
+        tax: data.tax,
+        total: data.total,
+        executedAt: executedAt.toISOString()
+    });
+
+    fillText('rcpt-amount', formatMoney(data.amount));
+    fillText('rcpt-tax', formatMoney(data.tax));
+    fillText('rcpt-total', formatMoney(data.total));
+    fillText('rcpt-txid', data.txId || '-');
+    fillText('rcpt-date', new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' }).format(executedAt));
+    fillText('rcpt-method', data.method || 'Pix');
+    fillText('rcpt-sender', data.senderName || '-');
+    fillText('rcpt-sender-id', data.senderId || '-');
+    fillText('rcpt-receiver', data.receiverName || '-');
+    fillText('rcpt-auth', authCode);
+
     modal.classList.remove('hidden');
 }
 
@@ -919,6 +960,10 @@ async function transferLogic(shortId, amount) {
         const receiverUid = receiverSnap.docs[0].id;
         if (receiverUid === currentUser.uid) throw new Error("Erro: mesmo usuário.");
         let receiverName = 'Destinatário';
+        let receiptTax = 0;
+        let receiptTotal = 0;
+        let receiptTxId = '';
+        let receiptExecutedAt = new Date();
 
         await runTransaction(db, async (t) => {
             const senderRef = doc(db, "users", currentUser.uid);
@@ -934,6 +979,9 @@ async function transferLogic(shortId, amount) {
             const taxRate = cDoc.exists() ? Number(cDoc.data().customTax || 0.02) : 0.02;
             const tax = Number((transferAmount * taxRate).toFixed(2));
             const total = Number((transferAmount + tax).toFixed(2));
+            receiptTax = tax;
+            receiptTotal = total;
+            receiptExecutedAt = new Date();
 
             if (Number(sDoc.data().balance || 0) < total) throw new Error("Saldo insuficiente.");
 
@@ -947,6 +995,7 @@ async function transferLogic(shortId, amount) {
             }
 
             const txRef = doc(collection(db, "transactions"));
+            receiptTxId = formatTransactionId(txRef.id);
             t.set(txRef, {
                 senderId: currentUser.uid, senderName: currentUser.name,
                 receiverId: receiverUid, receiverName: receiverName,
@@ -959,7 +1008,18 @@ async function transferLogic(shortId, amount) {
         navTo('dashboard');
         document.getElementById('transfer-form').reset();
         updateTransferPreview();
-        showTransferReceipt(transferAmount, receiverName);
+        await showTransferReceipt({
+            txId: receiptTxId,
+            executedAt: receiptExecutedAt,
+            method: 'Pix',
+            senderName: currentUser.name,
+            senderId: currentUser.shortId || currentUser.uid,
+            receiverName: receiverName,
+            receiverId: receiverShortId,
+            amount: transferAmount,
+            tax: receiptTax,
+            total: receiptTotal
+        });
         return true;
     } catch (e) {
         showToast(toErrorMessage(e), 'error');
@@ -1096,6 +1156,12 @@ function initStaticListeners() {
 
 toggleAuth('login');
 updateTransferPreview();
+
+
+
+
+
+
 
 
 

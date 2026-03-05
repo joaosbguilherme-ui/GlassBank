@@ -40,16 +40,22 @@
         <div class="modal-glass receipt-style">
             <div class="receipt-header">
                 <i class="fas fa-check-circle"></i>
-                <h2>Comprovante</h2>
+                <h2>GLASS BANK</h2>
+                <p>Comprovante de Transação</p>
             </div>
             <div class="receipt-body">
-                <p>Valor</p>
+                <p>Valor (sem imposto)</p>
                 <h1 id="rcpt-amount">R$ 0,00</h1>
+                <div class="row"><span>Impostos:</span> <span id="rcpt-tax">R$ 0,00</span></div>
+                <div class="row"><span>Total:</span> <span id="rcpt-total">R$ 0,00</span></div>
                 <hr>
-                <div class="row"><span>Data:</span> <span id="rcpt-date">-</span></div>
-                <div class="row"><span>De:</span> <span id="rcpt-sender">-</span></div>
-                <div class="row"><span>Para:</span> <span id="rcpt-receiver">-</span></div>
-                <div class="row"><span>Tipo:</span> <span id="rcpt-type">-</span></div>
+                <div class="row"><span>ID da Transação:</span> <span id="rcpt-txid">-</span></div>
+                <div class="row"><span>Data e Hora:</span> <span id="rcpt-date">-</span></div>
+                <div class="row"><span>Método:</span> <span id="rcpt-method">Pix</span></div>
+                <div class="row"><span>Pagador:</span> <span id="rcpt-sender">-</span></div>
+                <div class="row"><span>ID da conta:</span> <span id="rcpt-sender-id">-</span></div>
+                <div class="row"><span>Recebedor:</span> <span id="rcpt-receiver">-</span></div>
+                <div class="row"><span>Autenticação:</span> <span id="rcpt-auth">-</span></div>
             </div>
             <button onclick="closeModal('receipt-modal')">Fechar</button>
         </div>
@@ -253,4 +259,5 @@
     <script type="module" src="script.js"></script>
 </body>
 </html>
+
 

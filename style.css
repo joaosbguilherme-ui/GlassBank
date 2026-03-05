@@ -1,4 +1,4 @@
-:root {
+﻿:root {
     --primary: #8e2de2;
     --secondary: #4a00e0;
     --accent: #00f260;
@@ -131,9 +131,12 @@ input[type=range]::-webkit-slider-runnable-track { width: 100%; height: 4px; bac
 .receipt-style { max-width: 380px; }
 .receipt-header { display: flex; flex-direction: column; gap: 4px; align-items: center; margin-bottom: 10px; }
 .receipt-header i { font-size: 2rem; color: var(--accent); }
+.receipt-header p { opacity: 0.8; font-size: 0.85rem; }
 .receipt-body { text-align: left; font-size: 0.9rem; }
 .receipt-body h1 { text-align: center; margin: 8px 0; }
 .receipt-body .row { margin: 6px 0; }
+.receipt-body .row span:last-child { font-weight: 600; text-align: right; }
+#rcpt-txid, #rcpt-auth, #rcpt-sender-id { font-family: 'Courier New', monospace; font-size: 0.78rem; word-break: break-all; }
 .qr-frame { display: flex; justify-content: center; align-items: center; min-height: 240px; border: 1px dashed rgba(255,255,255,0.2); border-radius: 14px; }
 .qr-frame img { max-width: 220px; border-radius: 12px; }
 #reader { min-height: 260px; border-radius: 14px; overflow: hidden; background: rgba(0,0,0,0.2); }
@@ -144,3 +147,4 @@ input[type=range]::-webkit-slider-runnable-track { width: 100%; height: 4px; bac
     .app-container { width: 100vw; max-width: 100vw; height: 100vh; max-height: 100vh; border-radius: 0; }
     .actions-grid { grid-template-columns: repeat(2, 1fr); }
 }
+
