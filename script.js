@@ -1,8 +1,8 @@
-import { initializeApp } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-app.js";
+﻿import { initializeApp } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-app.js";
 import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-auth.js";
-import { getFirestore, doc, setDoc, getDoc, updateDoc, collection, query, where, onSnapshot, runTransaction, serverTimestamp, orderBy, limit, getDocs, increment, addDoc } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-firestore.js";
+import { getFirestore, doc, setDoc, updateDoc, collection, query, where, onSnapshot, runTransaction, serverTimestamp, orderBy, limit, getDocs, increment, addDoc, deleteField } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-firestore.js";
 
-// CONFIGURAÇÃO FIREBASE (MANTENHA A SUA, MAS RESTRINJA NO GOOGLE CLOUD CONSOLE)
+// CONFIGURAÇÃO FIREBASE (MANTENHA A SUA)
 const firebaseConfig = {
   apiKey: "AIzaSyBkl7Vt5WHMoiU3mThXiG7hAzv1T0FvSRI",
   authDomain: "glassbank-c411b.firebaseapp.com",
@@ -18,37 +18,128 @@ const db = getFirestore(app);
 
 // --- ESTADO GLOBAL ---
 let currentUser = null;
-let currentTaxRate = 0.02; 
-let dailyRewardValue = 50; 
+let currentTaxRate = 0.02;
+let dailyRewardValue = 50;
 let html5QrcodeScanner = null;
-let pendingTransaction = null; 
+let scannerIsRunning = false;
+let pendingTransaction = null;
 let currentTransactions = [];
+let stockMarketInitialized = false;
+let unsubUser = null;
+let unsubTransactions = null;
+let unsubCity = null;
+let unsubPolls = null;
+
 const CITY_HALL_ID = "vTFqk1ZX8NfwzuE4ZmJKXnfoI9r1";
+const QR_PREFIX = "GBANK";
+const LOAN_LIMIT = 5000;
+
+const toErrorMessage = (error) => {
+    if (typeof error === 'string') return error;
+    if (error && typeof error.message === 'string') return error.message;
+    return 'Ocorreu um erro inesperado.';
+};
+
+const toNumber = (value) => Number.parseFloat(String(value).replace(',', '.'));
+const formatMoney = (value) => `R$ ${Number(value || 0).toFixed(2)}`;
+const timestampToDate = (timestamp, fallback = new Date(0)) => {
+    return timestamp && typeof timestamp.toDate === 'function' ? timestamp.toDate() : fallback;
+};
+const enc = new TextEncoder();
+const allowedRoles = new Set(['user', 'merchant']);
+
+function bytesToHex(bytes) {
+    return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function randomHex(size = 16) {
+    const array = new Uint8Array(size);
+    crypto.getRandomValues(array);
+    return bytesToHex(array);
+}
+
+async function sha256Hex(value) {
+    const data = enc.encode(value);
+    const hash = await crypto.subtle.digest('SHA-256', data);
+    return bytesToHex(new Uint8Array(hash));
+}
+
+async function makePinHash(pin) {
+    const pinSalt = randomHex(16);
+    const pinHash = await sha256Hex(`${pinSalt}:${pin}`);
+    return { pinSalt, pinHash };
+}
+
+async function checkPin(pin, pinSalt, pinHash) {
+    if (!pinSalt || !pinHash) return false;
+    const computed = await sha256Hex(`${pinSalt}:${pin}`);
+    return computed === pinHash;
+}
+
+async function verifyAndMigratePin(user, candidatePin) {
+    if (await checkPin(candidatePin, user.pinSalt, user.pinHash)) return true;
+    if (typeof user.pin === 'string' && candidatePin === user.pin) {
+        const next = await makePinHash(candidatePin);
+        await updateDoc(doc(db, "users", user.uid), {
+            pinHash: next.pinHash,
+            pinSalt: next.pinSalt,
+            pin: deleteField()
+        });
+        return true;
+    }
+    return false;
+}
+
+async function generateUniqueShortId(maxAttempts = 20) {
+    for (let i = 0; i < maxAttempts; i += 1) {
+        const candidate = randomHex(4).slice(0, 6).toUpperCase();
+        const existing = await getDocs(query(collection(db, "users"), where("shortId", "==", candidate), limit(1)));
+        if (existing.empty) return candidate;
+    }
+    throw new Error("Falha ao gerar ID curto unico. Tente novamente.");
+}
+
+function ensureAdmin() {
+    if (currentUser?.role !== 'admin') {
+        showToast("Acao restrita a prefeitura.", "error");
+        return false;
+    }
+    return true;
+}
+function cleanupListeners() {
+    if (unsubUser) unsubUser();
+    if (unsubTransactions) unsubTransactions();
+    if (unsubCity) unsubCity();
+    if (unsubPolls) unsubPolls();
+    unsubUser = null;
+    unsubTransactions = null;
+    unsubCity = null;
+    unsubPolls = null;
+}
 
 // --- SONS & UI ---
 const playSound = (type) => {
     const id = type === 'success' ? 'snd-success' : type === 'error' ? 'snd-error' : 'snd-click';
     const audio = document.getElementById(id);
-    if(audio) { audio.currentTime = 0; audio.play().catch(() => {}); }
+    if(audio) { audio.currentTime = 0; audio.play().catch(e => {}); }
 };
 
 const showToast = (msg, type = 'success') => {
     playSound(type);
     const container = document.getElementById('toast-container');
+    if (!container) return;
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
-    toast.style.cssText = `background: ${type==='error'?'#ff416c':'#00f260'}; color:${type==='error'?'white':'black'}; padding:15px; margin-bottom:10px; border-radius:10px; box-shadow:0 5px 15px rgba(0,0,0,0.3); animation: slideUp 0.3s; z-index: 1000; position: relative;`;
-    toast.innerText = msg;
+    toast.style.cssText = `background: ${type==='error'?'#ff416c':'#00f260'}; color:${type==='error'?'white':'black'}; padding:15px; margin-bottom:10px; border-radius:10px; box-shadow:0 5px 15px rgba(0,0,0,0.3); animation: slideUp 0.3s;`;
+    toast.innerText = toErrorMessage(msg);
     container.appendChild(toast);
     setTimeout(() => toast.remove(), 4000);
 };
 
-window.navTo = (sectionId) => {
+function navTo(sectionId) {
     playSound('click');
-    document.querySelectorAll('section').forEach(s => {
-        s.classList.remove('active-section');
-        s.classList.add('hidden');
-    });
+    document.querySelectorAll('section').forEach(s => s.classList.remove('active-section'));
+    document.querySelectorAll('section').forEach(s => s.classList.add('hidden'));
     
     const target = document.getElementById(sectionId + '-section');
     if(target) {
@@ -56,23 +147,34 @@ window.navTo = (sectionId) => {
         target.classList.add('active-section');
     }
     
-    if(sectionId === 'qr-scan') window.startScanner();
-    else window.stopScanner();
-};
+    if (sectionId === 'qr-scan') startScanner();
+    else stopScanner();
+}
+window.navTo = navTo;
 
-window.closeModal = (id) => { 
-    document.getElementById(id).classList.add('hidden'); 
-    pendingTransaction = null; 
-};
+function closeModal(id) {
+    const modal = document.getElementById(id);
+    if (modal) modal.classList.add('hidden');
+    if (id === 'pin-modal') {
+        pendingTransaction = null;
+        const pinInput = document.getElementById('confirm-pin-input');
+        if (pinInput) pinInput.value = '';
+    }
+}
+window.closeModal = closeModal;
 
-window.toggleAuth = (mode) => {
+function toggleAuth(mode) {
     const isReg = mode === 'register';
     document.getElementById('fullname').style.display = isReg ? 'block' : 'none';
     document.getElementById('role-select').style.display = isReg ? 'block' : 'none';
     document.getElementById('reg-pin').style.display = isReg ? 'block' : 'none';
     document.getElementById('auth-btn').innerText = isReg ? 'Cadastrar' : 'Entrar';
     document.getElementById('auth-form').dataset.mode = mode;
-};
+    document.querySelectorAll('.auth-tabs button').forEach(btn => btn.classList.remove('active'));
+    const activeBtn = document.querySelector(`.auth-tabs button[onclick="toggleAuth('${mode}')"]`);
+    if (activeBtn) activeBtn.classList.add('active');
+}
+window.toggleAuth = toggleAuth;
 
 // --- AUTH & INIT ---
 const authForm = document.getElementById('auth-form');
@@ -86,40 +188,36 @@ authForm.addEventListener('submit', async (e) => {
 
     try {
         if (mode === 'register') {
-            const name = document.getElementById('fullname').value;
+            const name = document.getElementById('fullname').value.trim();
             const role = document.getElementById('role-select').value;
-            const pin = document.getElementById('reg-pin').value;
-            if(pin.length !== 4) throw new Error("PIN deve ter 4 números.");
+            const pin = document.getElementById('reg-pin').value.trim();
+            if (!name) throw new Error("Informe seu nome completo.");
+            if (!/^\d{4}$/.test(pin)) throw new Error("PIN deve ter 4 números.");
+            if (!allowedRoles.has(role)) throw new Error("Tipo de conta inválido.");
 
             const userCred = await createUserWithEmailAndPassword(auth, email, password);
+            const shortId = await generateUniqueShortId();
+            const { pinHash, pinSalt } = await makePinHash(pin);
+            // Criação do documento do usuário
             await setDoc(doc(db, "users", userCred.user.uid), {
-                name: name, email: email, role: role, pin: pin,
-                shortId: Math.random().toString(36).substring(2, 8).toUpperCase(),
+                name: name, email: email, role: role, pinHash, pinSalt,
+                shortId: shortId,
                 balance: 1000.00,
-                savingsBalance: 0,
-                stocks: { glasscoin: 0 },
-                lastDailyClaim: null,
+                savingsBalance: 0, // NOVO: Poupança
+                stocks: { glasscoin: 0 }, // NOVO: Ações
+                lastDailyClaim: null, // NOVO: Auxílio
                 status: 'active',
                 lastInterestDate: serverTimestamp(),
+                lastDebtInterestDate: serverTimestamp(),
+                lastSavingsInterestDate: serverTimestamp(),
                 createdAt: serverTimestamp()
             });
             showToast("Bem-vindo ao GlassBank!");
         } else {
             await signInWithEmailAndPassword(auth, email, password);
         }
-    } catch (err) { 
-        showToast(err.message, 'error'); 
-    } finally { 
-        btn.disabled = false; 
-        btn.innerText = mode==='register'?'Cadastrar':'Entrar'; 
-    }
-});
-
-// LOGOUT CORRIGIDO
-document.getElementById('logout-btn').addEventListener('click', () => {
-    signOut(auth).then(() => {
-        showToast("Desconectado com sucesso.");
-    });
+    } catch (err) { showToast(toErrorMessage(err), 'error'); }
+    finally { btn.disabled = false; btn.innerText = mode==='register'?'Cadastrar':'Entrar'; }
 });
 
 onAuthStateChanged(auth, (user) => {
@@ -128,61 +226,89 @@ onAuthStateChanged(auth, (user) => {
         navTo('dashboard');
         initializeUser(user.uid);
     } else {
+        cleanupListeners();
+        stopScanner();
         navTo('auth');
         currentUser = null;
+        currentTransactions = [];
     }
 });
 
+// --- MAIN USER LOGIC (COM JUROS E NOVIDADES) ---
 function initializeUser(uid) {
-    onSnapshot(doc(db, "users", uid), async (docSnap) => {
-        if (docSnap.exists()) {
-            currentUser = docSnap.data();
-            currentUser.uid = uid;
-
-            if(currentUser.status === 'banned') { signOut(auth); alert("Conta Banida"); return; }
-
-            document.getElementById('user-name').innerText = currentUser.name;
-            document.getElementById('user-role').innerText = currentUser.role === 'admin' ? 'Prefeitura' : 'Cidadão';
-            document.getElementById('user-balance').innerText = `R$ ${currentUser.balance.toFixed(2)}`;
-            document.getElementById('user-short-id').innerText = currentUser.shortId;
-            document.getElementById('user-avatar').src = `https://ui-avatars.com/api/?name=${encodeURIComponent(currentUser.name)}&background=random&color=fff`;
-            
-            document.getElementById('savings-balance').innerText = `R$ ${(currentUser.savingsBalance || 0).toFixed(2)}`;
-            document.getElementById('user-stock-count').innerText = currentUser.stocks?.glasscoin || 0;
-
-            const loanBadge = document.getElementById('loan-indicator');
-            loanBadge.style.display = currentUser.balance < 0 ? 'inline-block' : 'none';
-
-            checkDailyRewardStatus();
-
-            if(currentUser.role === 'admin' || uid === CITY_HALL_ID) {
-                document.getElementById('admin-btn').classList.remove('hidden');
-                window.initAdminPanel();
-            }
-
-            processInterests(uid);
+    if (unsubUser) unsubUser();
+    unsubUser = onSnapshot(doc(db, "users", uid), async (docSnap) => {
+        if (!docSnap.exists()) {
+            showToast('Cadastro do usuário não encontrado.', 'error');
+            return;
         }
+
+        currentUser = { ...docSnap.data(), uid };
+        if (currentUser.status === 'banned') {
+            signOut(auth);
+            alert("Conta Banida");
+            return;
+        }
+
+        const userName = currentUser.name || 'Usuário';
+        const role = currentUser.role || 'user';
+        const balance = Number(currentUser.balance || 0);
+
+        document.getElementById('user-name').innerText = userName;
+        document.getElementById('user-role').innerText = role === 'admin' ? 'Prefeitura' : role === 'merchant' ? 'Comércio' : 'Cidadão';
+        document.getElementById('user-balance').innerText = formatMoney(balance);
+        document.getElementById('user-short-id').innerText = currentUser.shortId || '---';
+        document.getElementById('user-avatar').src = `https://ui-avatars.com/api/?name=${encodeURIComponent(userName)}&background=random&color=fff`;
+
+        document.getElementById('savings-balance').innerText = formatMoney(currentUser.savingsBalance || 0);
+        document.getElementById('user-stock-count').innerText = Number(currentUser.stocks?.glasscoin || 0);
+
+        const loanBadge = document.getElementById('loan-indicator');
+        loanBadge.style.display = balance < 0 ? 'inline-block' : 'none';
+
+        checkDailyRewardStatus();
+        updateTransferPreview();
+        generateQR();
+
+        if (currentUser.role === 'admin') {
+            document.getElementById('admin-btn').classList.remove('hidden');
+            initAdminPanel();
+        } else {
+            document.getElementById('admin-btn').classList.add('hidden');
+        }
+
+        await processInterests(uid);
     });
 
     listenToTransactions(uid);
     syncSystemData();
     initStockMarket();
+    initStaticListeners();
 }
 
+// Processamento de Juros (Dívida 5% a cada 10min / Poupança 0.5% a cada 60min)
 async function processInterests(uid) {
-    if (!currentUser.lastInterestDate) return;
-    const now = new Date();
-    const lastCalc = currentUser.lastInterestDate.toDate();
-    const diffMinutes = (now - lastCalc) / (1000 * 60);
+    if (!currentUser) return;
 
-    if (currentUser.balance < 0 && diffMinutes >= 10) {
-        const intervals = Math.floor(diffMinutes / 10);
-        const newDebt = currentUser.balance * Math.pow(1.05, intervals);
-        const interestAmount = Math.abs(newDebt - currentUser.balance);
+    const now = new Date();
+    const lastDebtDate = timestampToDate(currentUser.lastDebtInterestDate || currentUser.lastInterestDate, now);
+    const lastSavingsDate = timestampToDate(currentUser.lastSavingsInterestDate || currentUser.lastInterestDate, now);
+    const debtMinutes = (now - lastDebtDate) / (1000 * 60);
+    const savingsMinutes = (now - lastSavingsDate) / (1000 * 60);
+
+    const debtIntervals = Math.floor(debtMinutes / 10);
+    if (Number(currentUser.balance || 0) < 0 && debtIntervals > 0) {
+        const currentDebt = Number(currentUser.balance || 0);
+        const newDebt = currentDebt * Math.pow(1.05, debtIntervals);
+        const interestAmount = Math.abs(newDebt - currentDebt);
 
         await runTransaction(db, async (t) => {
             const userRef = doc(db, "users", uid);
-            t.update(userRef, { balance: newDebt, lastInterestDate: serverTimestamp() });
+            t.update(userRef, {
+                balance: newDebt,
+                lastInterestDate: serverTimestamp(),
+                lastDebtInterestDate: serverTimestamp()
+            });
             const txRef = doc(collection(db, "transactions"));
             t.set(txRef, {
                 senderId: 'SYSTEM', senderName: 'Banco Central',
@@ -191,155 +317,243 @@ async function processInterests(uid) {
                 timestamp: serverTimestamp(), participants: [uid]
             });
         });
-        showToast(`Juros de Dívida aplicados: R$ ${interestAmount.toFixed(2)}`, 'error');
+        showToast(`Juros de Dívida aplicados: ${formatMoney(interestAmount)}`, 'error');
     }
 
-    if (currentUser.savingsBalance > 0 && diffMinutes >= 60) {
-        const intervals = Math.floor(diffMinutes / 60);
-        const newSavings = currentUser.savingsBalance * Math.pow(1.005, intervals);
-        const yieldAmount = newSavings - currentUser.savingsBalance;
+    const savingsIntervals = Math.floor(savingsMinutes / 60);
+    if (Number(currentUser.savingsBalance || 0) > 0 && savingsIntervals > 0) {
+        const currentSavings = Number(currentUser.savingsBalance || 0);
+        const newSavings = currentSavings * Math.pow(1.005, savingsIntervals);
+        const yieldAmount = newSavings - currentSavings;
 
-        if (intervals > 0) {
-             await updateDoc(doc(db, "users", uid), {
-                savingsBalance: newSavings,
-                lastInterestDate: serverTimestamp() 
-            });
-            await addDoc(collection(db, "transactions"), {
-                senderId: 'SYSTEM', senderName: 'Cofre Rendimento',
-                receiverId: uid, receiverName: currentUser.name,
-                amount: yieldAmount, type: 'interest_yield',
-                timestamp: serverTimestamp(), participants: [uid]
-            });
-            showToast(`Rendimento da Poupança: +R$ ${yieldAmount.toFixed(2)}`);
-        }
+        await updateDoc(doc(db, "users", uid), {
+            savingsBalance: newSavings,
+            lastInterestDate: serverTimestamp(),
+            lastSavingsInterestDate: serverTimestamp()
+        });
+
+        await addDoc(collection(db, "transactions"), {
+            senderId: 'SYSTEM', senderName: 'Cofre Rendimento',
+            receiverId: uid, receiverName: currentUser.name,
+            amount: yieldAmount, type: 'interest_yield',
+            timestamp: serverTimestamp(), participants: [uid]
+        });
+        showToast(`Rendimento da Poupança: +${formatMoney(yieldAmount)}`);
     }
 }
 
+// --- SISTEMA PREFEITURA & TRANSPARÊNCIA ---
 function syncSystemData() {
-    onSnapshot(doc(db, "users", CITY_HALL_ID), (snap) => {
-        if(snap.exists()) {
-            const data = snap.data();
-            currentTaxRate = data.customTax || 0.02;
-            dailyRewardValue = data.dailyRewardAmount || 50;
-            
-            document.getElementById('city-hall-balance').innerText = `R$ ${data.balance.toFixed(2)}`;
-            document.getElementById('total-tax-collected').innerText = `R$ ${(data.totalTaxCollected || 0).toFixed(2)}`;
-            document.getElementById('tax-display').innerText = (currentTaxRate*100).toFixed(1) + "%";
-            
-            if(currentUser && (currentUser.role === 'admin' || currentUser.uid === CITY_HALL_ID)) {
-                updateSliderUI(currentTaxRate * 100);
+    if (unsubCity) unsubCity();
+    if (unsubPolls) unsubPolls();
+
+    unsubCity = onSnapshot(doc(db, "users", CITY_HALL_ID), (snap) => {
+        if (!snap.exists()) return;
+        const data = snap.data();
+        currentTaxRate = Number(data.customTax || 0.02);
+        dailyRewardValue = Number(data.dailyRewardAmount || 50);
+
+        document.getElementById('city-hall-balance').innerText = formatMoney(data.balance || 0);
+        document.getElementById('total-tax-collected').innerText = formatMoney(data.totalTaxCollected || 0);
+        document.getElementById('tax-display').innerText = `${(currentTaxRate * 100).toFixed(1)}%`;
+        updateTransferPreview();
+
+        if (currentUser?.role === 'admin') {
+            updateSliderUI(currentTaxRate * 100);
+            const rewardInput = document.getElementById('admin-daily-reward');
+            if (rewardInput && document.activeElement !== rewardInput) {
+                rewardInput.value = dailyRewardValue.toFixed(2);
             }
         }
     });
 
     const q = query(collection(db, "polls"), where("status", "==", "open"));
-    onSnapshot(q, (snap) => {
+    unsubPolls = onSnapshot(q, (snap) => {
         const list = document.getElementById('polls-list');
+        if (!list) return;
         list.innerHTML = "";
+
         snap.forEach(docSnap => {
             const p = docSnap.data();
-            const percent = Math.min(100, (p.votes / p.targetVotes) * 100);
-            
+            const votes = Number(p.votes || 0);
+            const targetVotes = Math.max(1, Number(p.targetVotes || 1));
+            const cost = Number(p.cost || 0);
+            const percent = Math.min(100, (votes / targetVotes) * 100);
+
             const div = document.createElement('div');
             div.className = 'poll-card';
-            div.innerHTML = `
-                <div style="display:flex; justify-content:space-between">
-                    <strong>${p.title}</strong>
-                    <span>R$ ${p.cost}</span>
-                </div>
-                <div class="poll-progress"><div class="poll-bar" style="width:${percent}%"></div></div>
-                <div style="display:flex; justify-content:space-between; align-items:center">
-                    <small>${p.votes} / ${p.targetVotes} votos</small>
-                    <button onclick="votePoll('${docSnap.id}')" style="width:auto; padding:5px 15px; margin:0">Votar</button>
-                </div>
-            `;
+
+            const rowTop = document.createElement('div');
+            rowTop.style.display = 'flex';
+            rowTop.style.justifyContent = 'space-between';
+
+            const titleStrong = document.createElement('strong');
+            titleStrong.textContent = p.title || 'Sem titulo';
+
+            const costSpan = document.createElement('span');
+            costSpan.textContent = formatMoney(cost);
+
+            rowTop.appendChild(titleStrong);
+            rowTop.appendChild(costSpan);
+
+            const progress = document.createElement('div');
+            progress.className = 'poll-progress';
+            const bar = document.createElement('div');
+            bar.className = 'poll-bar';
+            bar.style.width = `${percent}%`;
+            progress.appendChild(bar);
+
+            const rowBottom = document.createElement('div');
+            rowBottom.style.display = 'flex';
+            rowBottom.style.justifyContent = 'space-between';
+            rowBottom.style.alignItems = 'center';
+
+            const votesSmall = document.createElement('small');
+            votesSmall.textContent = `${votes} / ${targetVotes} votos`;
+
+            const voteBtn = document.createElement('button');
+            voteBtn.textContent = 'Votar';
+            voteBtn.style.width = 'auto';
+            voteBtn.style.padding = '5px 15px';
+            voteBtn.style.margin = '0';
+            voteBtn.addEventListener('click', () => window.votePoll(docSnap.id));
+
+            rowBottom.appendChild(votesSmall);
+            rowBottom.appendChild(voteBtn);
+
+            div.appendChild(rowTop);
+            div.appendChild(progress);
+            div.appendChild(rowBottom);
             list.appendChild(div);
         });
     });
 }
 
-// FUNÇÕES DE INVESTIMENTO E POUPANÇA
+// --- INVESTIMENTOS ---
+// 1. Poupança
 window.savingsAction = async (type) => {
+    if (!currentUser) return;
     let amount = prompt(`Valor para ${type === 'deposit' ? 'Guardar' : 'Sacar'}:`);
-    amount = parseFloat(amount);
-    if(!amount || amount <= 0) return;
+    amount = toNumber(amount);
+    if (!Number.isFinite(amount) || amount <= 0) return;
 
-    if (type === 'deposit') {
-        if (currentUser.balance < amount) return showToast("Saldo insuficiente", "error");
-        await updateDoc(doc(db, "users", currentUser.uid), {
-            balance: increment(-amount),
-            savingsBalance: increment(amount)
-        });
-    } else {
-        if (currentUser.savingsBalance < amount) return showToast("Saldo no cofre insuficiente", "error");
-        await updateDoc(doc(db, "users", currentUser.uid), {
-            balance: increment(amount),
-            savingsBalance: increment(-amount)
-        });
+    try {
+        if (type === 'deposit') {
+            if (Number(currentUser.balance || 0) < amount) return showToast("Saldo insuficiente", "error");
+            await updateDoc(doc(db, "users", currentUser.uid), {
+                balance: increment(-amount),
+                savingsBalance: increment(amount)
+            });
+        } else {
+            if (Number(currentUser.savingsBalance || 0) < amount) return showToast("Saldo no cofre insuficiente", "error");
+            await updateDoc(doc(db, "users", currentUser.uid), {
+                balance: increment(amount),
+                savingsBalance: increment(-amount)
+            });
+        }
+        showToast("Operação no Cofre realizada!");
+    } catch (e) {
+        showToast(toErrorMessage(e), "error");
     }
-    showToast("Operação no Cofre realizada!");
 };
 
+// 2. Bolsa de Valores (Simulada no Cliente para todos verem igual, idealmente seria server-side)
+// Para simulação simples: O preço é baseado no minuto atual (Determinístico) para todos verem o mesmo.
 function initStockMarket() {
-    setInterval(() => {
+    if (stockMarketInitialized) return;
+    stockMarketInitialized = true;
+
+    const updateStock = () => {
         const now = Date.now();
+        // Algoritmo pseudo-aleatório baseado no tempo (preço muda a cada 10s)
         const timeSeed = Math.floor(now / 10000); 
         const basePrice = 50; 
-        const variation = Math.sin(timeSeed) * 20;
-        const price = basePrice + variation + (Math.random()*2); 
+        const variation = Math.sin(timeSeed) * 20; // Oscila entre -20 e +20
+        const price = basePrice + variation;
         
         const priceEl = document.getElementById('stock-price');
-        const oldPrice = parseFloat(priceEl.innerText.replace('R$ ', '').replace(',','.'));
+        if (!priceEl) return;
+        const oldPrice = toNumber(priceEl.innerText.replace('R$ ', '')) || price;
         
-        priceEl.innerText = `R$ ${price.toFixed(2)}`;
+        priceEl.innerText = formatMoney(price);
         
         const trendEl = document.getElementById('stock-trend');
-        if(price > oldPrice) { trendEl.innerHTML = "▲"; trendEl.className = "trend-up"; trendEl.style.color = "var(--accent)"; }
-        else { trendEl.innerHTML = "▼"; trendEl.className = "trend-down"; trendEl.style.color = "var(--danger)"; }
+        if (!trendEl) return;
+        const variationPercent = oldPrice ? (Math.abs((price - oldPrice) / oldPrice) * 100) : 0;
+        if (price > oldPrice) {
+            trendEl.innerHTML = `▲ ${variationPercent.toFixed(2)}%`;
+            trendEl.className = "trend-up";
+            trendEl.style.color = "var(--accent)";
+        } else {
+            trendEl.innerHTML = `▼ ${variationPercent.toFixed(2)}%`;
+            trendEl.className = "trend-down";
+            trendEl.style.color = "var(--danger)";
+        }
         
         window.currentStockPrice = price;
-    }, 5000);
+    };
+
+    updateStock();
+    setInterval(updateStock, 5000);
 }
 
 window.tradeStock = async (action) => {
+    if (!currentUser) return;
     const price = window.currentStockPrice;
-    if(!price) return;
+    if (!price) return;
     
-    if(action === 'buy') {
-        if(currentUser.balance < price) return showToast("Saldo insuficiente", "error");
-        await updateDoc(doc(db, "users", currentUser.uid), {
-            balance: increment(-price),
-            "stocks.glasscoin": increment(1)
-        });
-        showToast("Ação comprada!");
-    } else {
-        if(!currentUser.stocks?.glasscoin || currentUser.stocks.glasscoin < 1) return showToast("Você não tem ações", "error");
-        await updateDoc(doc(db, "users", currentUser.uid), {
-            balance: increment(price),
-            "stocks.glasscoin": increment(-1)
-        });
-        showToast("Ação vendida!");
+    try {
+        if(action === 'buy') {
+            if(Number(currentUser.balance || 0) < price) return showToast("Saldo insuficiente", "error");
+            await updateDoc(doc(db, "users", currentUser.uid), {
+                balance: increment(-price),
+                "stocks.glasscoin": increment(1)
+            });
+        } else {
+            if(!currentUser.stocks?.glasscoin || currentUser.stocks.glasscoin < 1) return showToast("Você não tem ações", "error");
+            await updateDoc(doc(db, "users", currentUser.uid), {
+                balance: increment(price),
+                "stocks.glasscoin": increment(-1)
+            });
+        }
+        playSound('click');
+    } catch (e) {
+        showToast(toErrorMessage(e), "error");
     }
 };
 
+// --- RECOMPENSA DIÁRIA ---
 function checkDailyRewardStatus() {
+    if (!currentUser) return;
     const area = document.getElementById('daily-reward-area');
+    if (!area) return;
     const now = new Date();
-    const last = currentUser.lastDailyClaim ? currentUser.lastDailyClaim.toDate() : new Date(0);
+    const last = timestampToDate(currentUser.lastDailyClaim, new Date(0));
     const diffHours = (now - last) / (1000 * 60 * 60);
 
-    if (diffHours >= 24) area.classList.remove('hidden');
-    else area.classList.add('hidden');
+    if (diffHours >= 24) {
+        area.classList.remove('hidden');
+    } else {
+        area.classList.add('hidden');
+    }
 }
 
 window.claimDailyReward = async () => {
+    if (!currentUser) return;
     try {
         await runTransaction(db, async (t) => {
             const cityRef = doc(db, "users", CITY_HALL_ID);
             const userRef = doc(db, "users", currentUser.uid);
             
             const cityDoc = await t.get(cityRef);
-            if(cityDoc.data().balance < dailyRewardValue) throw "Prefeitura sem verba para auxílio!";
+            const userDoc = await t.get(userRef);
+            if (!cityDoc.exists()) throw new Error("Prefeitura não encontrada.");
+            if (!userDoc.exists()) throw new Error("Usuário não encontrado.");
+
+            const lastClaim = timestampToDate(userDoc.data().lastDailyClaim, new Date(0));
+            const diffHours = (Date.now() - lastClaim.getTime()) / (1000 * 60 * 60);
+            if (diffHours < 24) throw new Error("Auxílio já resgatado nas últimas 24h.");
+            if (Number(cityDoc.data().balance || 0) < dailyRewardValue) throw new Error("Prefeitura sem verba para auxílio!");
 
             t.update(cityRef, { balance: increment(-dailyRewardValue) });
             t.update(userRef, { 
@@ -355,99 +569,29 @@ window.claimDailyReward = async () => {
                 timestamp: serverTimestamp(), participants: [currentUser.uid, CITY_HALL_ID]
             });
         });
-        showToast(`Recebeu R$ ${dailyRewardValue}!`);
+        showToast(`Recebeu ${formatMoney(dailyRewardValue)}!`);
         document.getElementById('daily-reward-area').classList.add('hidden');
-    } catch(e) { showToast(e, 'error'); }
-};
-
-// --- FUNÇÕES FALTANTES ADICIONADAS ---
-
-window.checkNotifications = () => {
-    showToast("Você não tem novas notificações no momento.", "success");
-};
-
-window.takeLoan = async () => {
-    const loanInput = document.getElementById('loan-amount-input');
-    const amount = parseFloat(loanInput.value);
-    
-    if(!amount || amount <= 0 || amount > 5000) {
-        return showToast("Valor inválido. O limite é R$ 5.000,00", "error");
-    }
-
-    // Como é uma simulação, libera o empréstimo mas adiciona ao saldo negativo base
-    // Isso acionará a lógica de dívida de 5% a cada 10min
-    await updateDoc(doc(db, "users", currentUser.uid), {
-        balance: increment(amount),
-        loanDebt: increment(amount) // Apenas registro visual se quiser adicionar depois
-    });
-
-    await addDoc(collection(db, "transactions"), {
-        senderId: 'SYSTEM', senderName: 'Empréstimo Aprovado',
-        receiverId: currentUser.uid, receiverName: currentUser.name,
-        amount: amount, type: 'loan',
-        timestamp: serverTimestamp(), participants: [currentUser.uid]
-    });
-
-    showToast(`Empréstimo de R$ ${amount.toFixed(2)} depositado! Cuidado com os juros.`, "success");
-    loanInput.value = '';
-    navTo('dashboard');
-};
-
-window.generateQR = () => {
-    const amount = document.getElementById('qr-amount').value;
-    const qrImage = document.getElementById('qr-image');
-    if (amount && currentUser) {
-        // Usando a API gratuita de QR Code para gerar a imagem
-        const qrData = `${currentUser.shortId}:${amount}`;
-        qrImage.src = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(qrData)}`;
-        qrImage.style.display = 'block';
-    } else {
-        qrImage.style.display = 'none';
-    }
-};
-
-window.startScanner = () => {
-    if (!html5QrcodeScanner) {
-        // Verifica se a biblioteca foi carregada pelo HTML
-        if(typeof Html5QrcodeScanner !== 'undefined') {
-            html5QrcodeScanner = new Html5QrcodeScanner("reader", { fps: 10, qrbox: {width: 250, height: 250} }, false);
-            html5QrcodeScanner.render((decodedText) => {
-                const parts = decodedText.split(':');
-                document.getElementById('dest-id').value = parts[0] || '';
-                if(parts[1]) document.getElementById('amount').value = parts[1];
-                navTo('transfer');
-            }, (error) => { /* ignora avisos de scan enquanto não foca */ });
-        } else {
-            showToast("Erro: Leitor de QR Code não carregado.", "error");
-        }
-    }
-};
-
-window.stopScanner = () => {
-    if (html5QrcodeScanner) {
-        html5QrcodeScanner.clear().catch(e => console.error("Falha ao limpar scanner", e));
-        html5QrcodeScanner = null;
-    }
-};
-
-window.initAdminPanel = () => {
-    updateSliderUI(currentTaxRate * 100);
-    document.getElementById('admin-daily-reward').value = dailyRewardValue;
+    } catch(e) { showToast(toErrorMessage(e), 'error'); }
 };
 
 // --- ADMIN FEATURES ---
+// Slider Logic
 const slider = document.getElementById('tax-slider');
 const taxText = document.getElementById('tax-psychology');
 const taxValDisplay = document.getElementById('tax-value-display');
 
-slider.addEventListener('input', (e) => {
-    const val = parseFloat(e.target.value);
-    taxValDisplay.innerText = val + "%";
-    updateSliderUI(val);
-});
+if (slider) {
+    slider.addEventListener('input', (e) => {
+        const val = Number.parseFloat(e.target.value);
+        if (taxValDisplay) taxValDisplay.innerText = `${val}%`;
+        updateSliderUI(val);
+    });
+}
 
 function updateSliderUI(val) {
-    slider.value = val;
+    if (!slider || !taxText || !taxValDisplay) return;
+    slider.value = val; // Sync visual
+    taxValDisplay.innerText = `${val}%`;
     taxText.className = "";
     if (val <= 0.5) {
         taxText.innerText = "🟢 Sistema Saudável (Quase imperceptível)";
@@ -467,73 +611,314 @@ function updateSliderUI(val) {
     }
 }
 
+function initAdminPanel() {
+    if (currentUser?.role !== 'admin') return;
+    updateSliderUI(currentTaxRate * 100);
+    const rewardInput = document.getElementById('admin-daily-reward');
+    if (rewardInput && document.activeElement !== rewardInput) {
+        rewardInput.value = dailyRewardValue.toFixed(2);
+    }
+}
+
 window.updateGlobalTax = async () => {
-    const val = parseFloat(slider.value) / 100;
-    await updateDoc(doc(db, "users", CITY_HALL_ID), { customTax: val });
-    showToast("Taxa Atualizada!");
+    if (!ensureAdmin()) return;
+    if (!slider) return;
+    const val = Number.parseFloat(slider.value) / 100;
+    if (!Number.isFinite(val) || val < 0 || val > 0.15) {
+        showToast("Taxa inválida.", "error");
+        return;
+    }
+
+    try {
+        await updateDoc(doc(db, "users", CITY_HALL_ID), { customTax: val });
+        showToast("Taxa Atualizada!");
+    } catch (e) {
+        showToast(toErrorMessage(e), "error");
+    }
 };
 
 window.updateDailyReward = async () => {
-    const val = parseFloat(document.getElementById('admin-daily-reward').value);
-    if(val > 0) {
-        await updateDoc(doc(db, "users", CITY_HALL_ID), { dailyRewardAmount: val });
-        showToast("Valor do Auxílio Atualizado!");
+    if (!ensureAdmin()) return;
+    const rewardInput = document.getElementById('admin-daily-reward');
+    if (!rewardInput) return;
+    const amount = toNumber(rewardInput.value);
+    if (!Number.isFinite(amount) || amount <= 0) {
+        showToast("Informe um valor válido para o auxílio.", "error");
+        return;
+    }
+
+    try {
+        await updateDoc(doc(db, "users", CITY_HALL_ID), { dailyRewardAmount: amount });
+        showToast("Auxílio diário atualizado!");
+    } catch (e) {
+        showToast(toErrorMessage(e), "error");
     }
 };
 
 window.createPoll = async () => {
-    const title = document.getElementById('poll-title').value;
-    const cost = parseFloat(document.getElementById('poll-cost').value);
-    const target = parseInt(document.getElementById('poll-target').value);
-    
-    if(!title || !cost || !target) return showToast("Preencha todos os campos", "error");
+    if (!ensureAdmin()) return;
+    const title = document.getElementById('poll-title').value.trim();
+    const cost = toNumber(document.getElementById('poll-cost').value);
+    const target = Number.parseInt(document.getElementById('poll-target').value, 10);
 
-    await addDoc(collection(db, "polls"), {
-        title, cost, targetVotes: target, votes: 0, status: 'open', voters: []
-    });
-    showToast("Enquete Publicada");
-    
-    document.getElementById('poll-title').value = '';
-    document.getElementById('poll-cost').value = '';
-    document.getElementById('poll-target').value = '';
+    if (!title) {
+        showToast("Informe o título da enquete.", "error");
+        return;
+    }
+    if (!Number.isFinite(cost) || cost <= 0) {
+        showToast("Informe um custo válido.", "error");
+        return;
+    }
+    if (!Number.isInteger(target) || target <= 0) {
+        showToast("Informe uma meta de votos válida.", "error");
+        return;
+    }
+
+    try {
+        await addDoc(collection(db, "polls"), {
+            title, cost, targetVotes: target, votes: 0, status: 'open', voters: []
+        });
+        document.getElementById('poll-title').value = "";
+        document.getElementById('poll-cost').value = "";
+        document.getElementById('poll-target').value = "";
+        showToast("Enquete Publicada");
+    } catch (e) {
+        showToast(toErrorMessage(e), "error");
+    }
 };
 
 window.votePoll = async (pollId) => {
+    if (!currentUser) return;
+
     const pollRef = doc(db, "polls", pollId);
-    const snap = await getDoc(pollRef);
-    const data = snap.data();
+    try {
+        await runTransaction(db, async (t) => {
+            const pDoc = await t.get(pollRef);
+            if (!pDoc.exists()) throw new Error("Enquete não encontrada.");
 
-    if(data.voters.includes(currentUser.uid)) return showToast("Você já votou!", "error");
+            const pollData = pDoc.data();
+            const voters = Array.isArray(pollData.voters) ? pollData.voters : [];
+            if (voters.includes(currentUser.uid)) throw new Error("Você já votou!");
 
-    await runTransaction(db, async (t) => {
-        const pDoc = await t.get(pollRef);
-        const cityRef = doc(db, "users", CITY_HALL_ID);
-        const cityDoc = await t.get(cityRef);
-        
-        let newVotes = pDoc.data().votes + 1;
-        let newVoters = [...pDoc.data().voters, currentUser.uid];
-        let newStatus = 'open';
+            const cityRef = doc(db, "users", CITY_HALL_ID);
+            const cityDoc = await t.get(cityRef);
 
-        if (newVotes >= pDoc.data().targetVotes) {
-            if (cityDoc.data().balance >= pDoc.data().cost) {
-                t.update(cityRef, { balance: increment(-pDoc.data().cost) });
-                newStatus = 'funded'; 
+            const newVotes = Number(pollData.votes || 0) + 1;
+            const newVoters = [...voters, currentUser.uid];
+            let newStatus = 'open';
+
+            if (newVotes >= Number(pollData.targetVotes || 0) && cityDoc.exists()) {
+                if (Number(cityDoc.data().balance || 0) >= Number(pollData.cost || 0)) {
+                    t.update(cityRef, { balance: increment(-Number(pollData.cost || 0)) });
+                    newStatus = 'funded';
+                }
             }
-        }
-        
-        t.update(pollRef, { votes: newVotes, voters: newVoters, status: newStatus });
-    });
-    showToast("Voto computado!");
+
+            t.update(pollRef, { votes: newVotes, voters: newVoters, status: newStatus });
+        });
+        showToast("Voto computado!");
+    } catch (e) {
+        showToast(toErrorMessage(e), "error");
+    }
 };
 
-// --- TRANSAÇÕES ---
-async function transferLogic(shortId, amount) {
+window.checkNotifications = () => {
+    if (!currentUser) return;
+    if (!currentTransactions.length) {
+        showToast("Sem notificações novas.");
+        return;
+    }
+
+    const tx = currentTransactions[0];
+    const isSender = tx.senderId === currentUser.uid;
+    const name = tx.type === 'transfer' ? (isSender ? tx.receiverName : tx.senderName) : (tx.senderName || 'Sistema');
+    showToast(`${(tx.type || 'transaction').toUpperCase()} • ${name} • ${formatMoney(tx.amount || 0)}`);
+};
+
+window.takeLoan = async () => {
+    if (!currentUser) return;
+    const input = document.getElementById('loan-amount-input');
+    if (!input) return;
+
+    const amount = toNumber(input.value);
+    if (!Number.isFinite(amount) || amount <= 0) {
+        showToast("Informe um valor válido.", "error");
+        return;
+    }
+    if (amount > LOAN_LIMIT) {
+        showToast(`Limite máximo por solicitação: ${formatMoney(LOAN_LIMIT)}.`, "error");
+        return;
+    }
+    if (Number(currentUser.balance || 0) < 0) {
+        showToast("Quite sua dívida atual antes de novo empréstimo.", "error");
+        return;
+    }
+
     try {
-        const q = query(collection(db, "users"), where("shortId", "==", shortId));
+        await runTransaction(db, async (t) => {
+            const userRef = doc(db, "users", currentUser.uid);
+            const userDoc = await t.get(userRef);
+            if (!userDoc.exists()) throw new Error("Usuário não encontrado.");
+            if (Number(userDoc.data().balance || 0) < 0) throw new Error("Você já possui dívida ativa.");
+
+            t.update(userRef, {
+                balance: increment(amount),
+                lastDebtInterestDate: serverTimestamp()
+            });
+
+            const txRef = doc(collection(db, "transactions"));
+            t.set(txRef, {
+                senderId: 'SYSTEM', senderName: 'Crédito Bancário',
+                receiverId: currentUser.uid, receiverName: currentUser.name,
+                amount: amount, type: 'loan',
+                timestamp: serverTimestamp(), participants: [currentUser.uid]
+            });
+        });
+
+        input.value = "";
+        showToast(`Empréstimo aprovado: ${formatMoney(amount)}`);
+        navTo('dashboard');
+    } catch (e) {
+        showToast(toErrorMessage(e), "error");
+    }
+};
+
+// --- QR ---
+function buildQrPayload(shortId, amount) {
+    return `${QR_PREFIX}:${shortId}:${amount.toFixed(2)}`;
+}
+
+function parseQrPayload(text) {
+    if (typeof text !== 'string') return null;
+    const match = text.trim().match(/^GBANK:([A-Z0-9]{6}):(\d+(?:[.,]\d{1,2})?)$/i);
+    if (!match) return null;
+
+    const amount = toNumber(match[2]);
+    if (!Number.isFinite(amount) || amount <= 0) return null;
+    return { shortId: match[1].toUpperCase(), amount };
+}
+
+function generateQR() {
+    const amountInput = document.getElementById('qr-amount');
+    const image = document.getElementById('qr-image');
+    if (!amountInput || !image || !currentUser?.shortId) return;
+
+    const amount = toNumber(amountInput.value);
+    if (!Number.isFinite(amount) || amount <= 0) {
+        image.style.display = 'none';
+        image.removeAttribute('src');
+        return;
+    }
+
+    const payload = buildQrPayload(currentUser.shortId, amount);
+    image.src = `https://api.qrserver.com/v1/create-qr-code/?size=260x260&data=${encodeURIComponent(payload)}`;
+    image.style.display = 'block';
+}
+window.generateQR = generateQR;
+
+async function startScanner() {
+    if (scannerIsRunning) return;
+    if (!window.Html5Qrcode) {
+        showToast("Leitor de QR indisponível.", "error");
+        return;
+    }
+
+    try {
+        if (!html5QrcodeScanner) html5QrcodeScanner = new window.Html5Qrcode("reader");
+
+        await html5QrcodeScanner.start(
+            { facingMode: "environment" },
+            { fps: 10, qrbox: { width: 220, height: 220 } },
+            async (decodedText) => {
+                const payload = parseQrPayload(decodedText);
+                if (!payload) return;
+                if (payload.shortId === currentUser?.shortId) {
+                    showToast("Este QR pertence à sua própria conta.", "error");
+                    return;
+                }
+
+                await stopScanner();
+                navTo('transfer');
+                document.getElementById('dest-id').value = payload.shortId;
+                document.getElementById('amount').value = payload.amount.toFixed(2);
+                updateTransferPreview();
+                showToast("QR lido com sucesso.");
+            },
+            () => {}
+        );
+
+        scannerIsRunning = true;
+    } catch (e) {
+        showToast("Não foi possível iniciar a câmera.", "error");
+    }
+}
+
+async function stopScanner() {
+    if (!html5QrcodeScanner) return;
+    try {
+        if (scannerIsRunning) {
+            await html5QrcodeScanner.stop();
+            await html5QrcodeScanner.clear();
+        }
+    } catch (_) {
+        // Ignora erros de parada do scanner.
+    } finally {
+        scannerIsRunning = false;
+    }
+}
+
+// --- TRANSAÇÕES ---
+function updateTransferPreview() {
+    const amountInput = document.getElementById('amount');
+    const taxDisplay = document.getElementById('tax-display');
+    const totalDebit = document.getElementById('total-debit');
+    if (!amountInput || !taxDisplay || !totalDebit) return;
+
+    const amount = toNumber(amountInput.value);
+    const safeAmount = Number.isFinite(amount) && amount > 0 ? amount : 0;
+    const total = safeAmount + (safeAmount * currentTaxRate);
+
+    taxDisplay.innerText = `${(currentTaxRate * 100).toFixed(1)}%`;
+    totalDebit.innerText = formatMoney(total);
+}
+
+function showTransferReceipt(amount, receiverName) {
+    const modal = document.getElementById('receipt-modal');
+    if (!modal) return;
+    document.getElementById('rcpt-amount').innerText = formatMoney(amount);
+    document.getElementById('rcpt-date').innerText = new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' }).format(new Date());
+    document.getElementById('rcpt-sender').innerText = currentUser?.name || '-';
+    document.getElementById('rcpt-receiver').innerText = receiverName || '-';
+    document.getElementById('rcpt-type').innerText = 'TRANSFER';
+    modal.classList.remove('hidden');
+}
+
+window.executeTransaction = async (shortId, amount) => transferLogic(shortId, amount);
+
+async function transferLogic(shortId, amount) {
+    if (!currentUser) return false;
+
+    const receiverShortId = String(shortId || '').toUpperCase().trim();
+    const transferAmount = Number(amount);
+
+    if (!/^[A-Z0-9]{6}$/.test(receiverShortId)) {
+        showToast("ID do destinatário inválido.", "error");
+        return false;
+    }
+    if (!Number.isFinite(transferAmount) || transferAmount <= 0) {
+        showToast("Valor inválido.", "error");
+        return false;
+    }
+
+    try {
+        const q = query(collection(db, "users"), where("shortId", "==", receiverShortId));
         const receiverSnap = await getDocs(q);
-        if(receiverSnap.empty) throw "Destinatário não encontrado";
+        if (receiverSnap.empty) throw new Error("Destinatário não encontrado.");
+        if (receiverSnap.size > 1) throw new Error("ID do destinatário duplicado. Contate o suporte.");
+
         const receiverUid = receiverSnap.docs[0].id;
-        if(receiverUid === currentUser.uid) throw "Erro: Mesmo usuário";
+        if (receiverUid === currentUser.uid) throw new Error("Erro: mesmo usuário.");
+        let receiverName = 'Destinatário';
 
         await runTransaction(db, async (t) => {
             const senderRef = doc(db, "users", currentUser.uid);
@@ -543,105 +928,179 @@ async function transferLogic(shortId, amount) {
             const sDoc = await t.get(senderRef);
             const rDoc = await t.get(receiverRef);
             const cDoc = await t.get(cityRef);
+            if (!sDoc.exists() || !rDoc.exists()) throw new Error("Conta não encontrada.");
 
-            let taxRate = cDoc.exists() ? (cDoc.data().customTax || 0.02) : 0.02;
-            let tax = amount * taxRate;
-            let total = amount + tax;
+            receiverName = rDoc.data().name || 'Destinatário';
+            const taxRate = cDoc.exists() ? Number(cDoc.data().customTax || 0.02) : 0.02;
+            const tax = Number((transferAmount * taxRate).toFixed(2));
+            const total = Number((transferAmount + tax).toFixed(2));
 
-            if(sDoc.data().balance < total) throw "Saldo Insuficiente";
+            if (Number(sDoc.data().balance || 0) < total) throw new Error("Saldo insuficiente.");
 
             t.update(senderRef, { balance: increment(-total) });
-            t.update(receiverRef, { balance: increment(amount) });
-            if(cDoc.exists()) {
-                t.update(cityRef, { 
+            t.update(receiverRef, { balance: increment(transferAmount) });
+            if (cDoc.exists()) {
+                t.update(cityRef, {
                     balance: increment(tax),
-                    totalTaxCollected: increment(tax) 
+                    totalTaxCollected: increment(tax)
                 });
             }
 
             const txRef = doc(collection(db, "transactions"));
             t.set(txRef, {
                 senderId: currentUser.uid, senderName: currentUser.name,
-                receiverId: receiverUid, receiverName: rDoc.data().name,
-                amount: amount, tax: tax, type: 'transfer',
+                receiverId: receiverUid, receiverName: receiverName,
+                amount: transferAmount, tax: tax, type: 'transfer',
                 timestamp: serverTimestamp(), participants: [currentUser.uid, receiverUid]
             });
         });
+
         showToast("Transferência realizada!");
         navTo('dashboard');
         document.getElementById('transfer-form').reset();
-    } catch (e) { showToast(e, 'error'); }
+        updateTransferPreview();
+        showTransferReceipt(transferAmount, receiverName);
+        return true;
+    } catch (e) {
+        showToast(toErrorMessage(e), 'error');
+        return false;
+    }
 }
 
 document.getElementById('transfer-form').addEventListener('submit', (e) => {
     e.preventDefault();
-    const id = document.getElementById('dest-id').value.toUpperCase();
-    const amt = parseFloat(document.getElementById('amount').value);
+    const id = document.getElementById('dest-id').value.toUpperCase().trim();
+    const amt = toNumber(document.getElementById('amount').value);
+    if (!/^[A-Z0-9]{6}$/.test(id)) return showToast("ID do destinatário inválido.", "error");
+    if (!Number.isFinite(amt) || amt <= 0) return showToast("Valor inválido.", "error");
+
     pendingTransaction = { id, amt };
     document.getElementById('pin-modal').classList.remove('hidden');
+    document.getElementById('confirm-pin-input').value = "";
 });
 
-document.getElementById('confirm-pin-btn').addEventListener('click', () => {
-    if(document.getElementById('confirm-pin-input').value === currentUser.pin) {
-        transferLogic(pendingTransaction.id, pendingTransaction.amt);
-        closeModal('pin-modal');
-    } else showToast("PIN Incorreto", "error");
-    document.getElementById('confirm-pin-input').value = '';
+document.getElementById('confirm-pin-btn').addEventListener('click', async () => {
+    if (!pendingTransaction || !currentUser) {
+        showToast("Nenhuma transação pendente.", "error");
+        return;
+    }
+
+    const pinInput = document.getElementById('confirm-pin-input').value;
+    if (await verifyAndMigratePin(currentUser, pinInput)) {
+        const ok = await transferLogic(pendingTransaction.id, pendingTransaction.amt);
+        if (ok) closeModal('pin-modal');
+    } else {
+        showToast("PIN Incorreto", "error");
+    }
 });
 
-// --- HISTÓRICO & FILTROS CORRIGIDOS ---
+// --- HISTÓRICO & FILTROS ---
 function listenToTransactions(uid) {
+    if (unsubTransactions) unsubTransactions();
     const q = query(collection(db, "transactions"), where("participants", "array-contains", uid), orderBy("timestamp", "desc"), limit(30));
-    onSnapshot(q, (snap) => {
+    unsubTransactions = onSnapshot(q, (snap) => {
         currentTransactions = [];
-        snap.forEach(d => currentTransactions.push({...d.data(), id: d.id}));
-        // Captura o chip ativo atual para manter o filtro ao atualizar
-        const activeChip = document.querySelector('.filter-chips button.active-chip');
-        const filterType = activeChip ? activeChip.dataset.filter : 'all';
-        renderHistory(filterType);
+        snap.forEach(d => currentTransactions.push({ ...d.data(), id: d.id }));
+        renderHistory('all');
     });
 }
 
-window.filterHistory = (filter) => {
-    // Corrige o erro do uso obsoleto de 'event.target' que quebrava o JavaScript
-    const event = window.event;
-    if(event) {
-        document.querySelectorAll('.filter-chips button').forEach(b => b.classList.remove('active-chip'));
-        event.currentTarget.classList.add('active-chip');
-        event.currentTarget.dataset.filter = filter; // salva estado do filtro
-    }
+window.filterHistory = (filter, event) => {
+    document.querySelectorAll('.filter-chips button').forEach(b => b.classList.remove('active-chip'));
+    const targetBtn = event?.currentTarget || document.querySelector(`.filter-chips button[data-filter="${filter}"]`);
+    if (targetBtn) targetBtn.classList.add('active-chip');
     renderHistory(filter);
 };
 
 function renderHistory(filter) {
     const list = document.getElementById('transaction-list');
+    if (!list || !currentUser) return;
     list.innerHTML = "";
-    
+
     currentTransactions.forEach(t => {
         const isSender = t.senderId === currentUser.uid;
-        
-        if(filter === 'in' && isSender) return;
-        if(filter === 'out' && !isSender) return;
-        if(filter === 'tax' && t.type !== 'tax' && t.amount > 0) return; 
+        const hasTax = Number(t.tax || 0) > 0 || t.type === 'tax';
+        if (filter === 'in' && isSender) return;
+        if (filter === 'out' && !isSender) return;
+        if (filter === 'tax' && !hasTax) return;
 
         const li = document.createElement('li');
         let icon = isSender ? 'arrow-up' : 'arrow-down';
         let color = isSender ? '#ff416c' : '#00f260';
         let signal = isSender ? '-' : '+';
-        
+
         if (t.type === 'interest_debt') { icon = 'fire'; color = '#e74c3c'; signal = '-'; }
         if (t.type === 'interest_yield') { icon = 'leaf'; color = '#f1c40f'; signal = '+'; }
         if (t.type === 'welfare') { icon = 'gift'; color = '#3498db'; signal = '+'; }
-        if (t.type === 'loan') { icon = 'hand-holding-usd'; color = '#8e2de2'; signal = '+'; }
+        if (t.type === 'loan') { icon = 'hand-holding-usd'; color = '#f39c12'; signal = '+'; }
 
-        li.innerHTML = `
-            <div>
-                <i class="fas fa-${icon}" style="color:${color}; margin-right:10px;"></i>
-                <strong>${t.type === 'transfer' ? (isSender ? t.receiverName : t.senderName) : t.senderName}</strong>
-                <br><small style="opacity:0.6">${t.type.toUpperCase()}</small>
-            </div>
-            <div style="color:${color}">${signal} R$ ${t.amount.toFixed(2)}</div>
-        `;
+        const title = t.type === 'transfer' ? (isSender ? t.receiverName : t.senderName) : (t.senderName || 'Sistema');
+        const txType = String(t.type || 'transaction').toUpperCase();
+
+        const left = document.createElement('div');
+        const iconEl = document.createElement('i');
+        iconEl.className = `fas fa-${icon}`;
+        iconEl.style.color = color;
+        iconEl.style.marginRight = '10px';
+
+        const strong = document.createElement('strong');
+        strong.textContent = String(title || 'Sistema');
+
+        const br = document.createElement('br');
+        const small = document.createElement('small');
+        small.style.opacity = '0.6';
+        small.textContent = txType;
+
+        left.appendChild(iconEl);
+        left.appendChild(strong);
+        left.appendChild(br);
+        left.appendChild(small);
+
+        const right = document.createElement('div');
+        right.style.color = color;
+        right.textContent = `${signal} ${formatMoney(t.amount || 0)}`;
+
+        li.appendChild(left);
+        li.appendChild(right);
         list.appendChild(li);
     });
 }
+
+function initStaticListeners() {
+    const logoutBtn = document.getElementById('logout-btn');
+    if (logoutBtn && !logoutBtn.dataset.bound) {
+        logoutBtn.dataset.bound = '1';
+        logoutBtn.addEventListener('click', async () => {
+            try {
+                await signOut(auth);
+            } catch (e) {
+                showToast(toErrorMessage(e), 'error');
+            }
+        });
+    }
+
+    const amountInput = document.getElementById('amount');
+    if (amountInput && !amountInput.dataset.bound) {
+        amountInput.dataset.bound = '1';
+        amountInput.addEventListener('input', updateTransferPreview);
+    }
+
+    const pinInput = document.getElementById('confirm-pin-input');
+    if (pinInput && !pinInput.dataset.bound) {
+        pinInput.dataset.bound = '1';
+        pinInput.addEventListener('input', () => {
+            pinInput.value = pinInput.value.replace(/\D/g, '').slice(0, 4);
+        });
+    }
+}
+
+toggleAuth('login');
+updateTransferPreview();
+
+
+
+
+
+
+
+

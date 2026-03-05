@@ -1,11 +1,13 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://www.gstatic.com https://unpkg.com https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; img-src 'self' data: https:; media-src https:; connect-src https://*.googleapis.com https://*.firebaseio.com https://*.gstatic.com https://firestore.googleapis.com https://identitytoolkit.googleapis.com; font-src 'self' https://cdnjs.cloudflare.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
     <title>GlassBank - Economy Sim</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer">
+    <script src="https://unpkg.com/html5-qrcode" type="text/javascript" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -122,10 +124,10 @@
             <div class="history-preview">
                 <h3>Extrato</h3>
                 <div class="filter-chips">
-                    <button onclick="filterHistory('all')" class="active-chip">Tudo</button>
-                    <button onclick="filterHistory('in')">Entrada</button>
-                    <button onclick="filterHistory('out')">Saída</button>
-                    <button onclick="filterHistory('tax')">Impostos</button>
+                    <button data-filter="all" onclick="filterHistory('all', event)" class="active-chip">Tudo</button>
+                    <button data-filter="in" onclick="filterHistory('in', event)">Entrada</button>
+                    <button data-filter="out" onclick="filterHistory('out', event)">Saída</button>
+                    <button data-filter="tax" onclick="filterHistory('tax', event)">Impostos</button>
                 </div>
                 <ul id="transaction-list"></ul>
             </div>
@@ -251,3 +253,4 @@
     <script type="module" src="script.js"></script>
 </body>
 </html>
+
