@@ -29,10 +29,26 @@ let unsubUser = null;
 let unsubTransactions = null;
 let unsubCity = null;
 let unsubPolls = null;
+let unsubAdminTransactions = null;
+let unsubAdminLogs = null;
+let unsubRiskUsers = null;
+let currentNotifications = [];
+let currentAdminTransactions = [];
+let currentAdminLogs = [];
+let currentRiskUsers = [];
+let activeHistoryFilter = 'all';
 
 const CITY_HALL_ID = "vTFqk1ZX8NfwzuE4ZmJKXnfoI9r1";
 const QR_PREFIX = "GBANK";
 const LOAN_LIMIT = 5000;
+const LOAN_WINDOW_LIMIT = 5000;
+const LOAN_WINDOW_HOURS = 24;
+const LOAN_COOLDOWN_HOURS = 6;
+const LOAN_MIN_ACCOUNT_MINUTES = 30;
+const HIGH_NEGATIVE_ALERT = -1000;
+const MAX_CONTACTS = 15;
+const MAX_NOTIFICATION_READ_IDS = 200;
+const MAX_NOTIFICATION_ITEMS = 40;
 
 const toErrorMessage = (error) => {
     if (typeof error === 'string') return error;
@@ -128,15 +144,120 @@ function fillText(id, value) {
     if (el) el.innerText = value;
 }
 
+function formatDateTime(date) {
+    return new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' }).format(date);
+}
+
+function timestampToMillis(timestamp, fallback = 0) {
+    return timestamp && typeof timestamp.toMillis === 'function' ? timestamp.toMillis() : fallback;
+}
+
+function formatStatus(status) {
+    if (status === 'estornada') return 'Estornada';
+    if (status === 'aguardando_verba') return 'Aguardando verba';
+    return 'Concluida';
+}
+
+function buildTransactionRecord(rawId, data) {
+    const amount = Number(data.amount || 0);
+    const tax = Number(data.tax || 0);
+    const total = Number((data.total ?? (amount + tax)).toFixed(2));
+    return {
+        ...data,
+        txId: formatTransactionId(rawId),
+        amount,
+        tax,
+        total,
+        method: data.method || 'Sistema',
+        status: data.status || 'concluida',
+        timestamp: serverTimestamp()
+    };
+}
+
+function getUserContacts() {
+    return Array.isArray(currentUser?.contacts) ? [...currentUser.contacts] : [];
+}
+
+function getReadNotificationIds() {
+    return Array.isArray(currentUser?.readNotificationIds) ? currentUser.readNotificationIds : [];
+}
+
+function getLoanState(userData = currentUser) {
+    const now = Date.now();
+    const balance = Number(userData?.balance || 0);
+    const loanOutstanding = Number(userData?.loanOutstanding || 0);
+    const createdAtMs = timestampToMillis(userData?.createdAt, now);
+    const accountAgeMinutes = Math.max(0, (now - createdAtMs) / (1000 * 60));
+    const lastLoanAtMs = timestampToMillis(userData?.lastLoanAt, 0);
+    const cooldownRemainingMs = Math.max(0, (LOAN_COOLDOWN_HOURS * 60 * 60 * 1000) - (now - lastLoanAtMs));
+    const loanWindowStartedAtMs = timestampToMillis(userData?.loanWindowStartedAt, 0);
+    const windowActive = loanWindowStartedAtMs > 0 && (now - loanWindowStartedAtMs) < (LOAN_WINDOW_HOURS * 60 * 60 * 1000);
+    const borrowedThisWindow = windowActive ? Number(userData?.borrowedThisWindow || 0) : 0;
+    const dynamicLimit = Math.min(LOAN_LIMIT, Math.max(500, 1000 + Math.max(0, balance) * 0.5));
+    const remainingWindowLimit = Math.max(0, LOAN_WINDOW_LIMIT - borrowedThisWindow);
+    const availableLimit = accountAgeMinutes < LOAN_MIN_ACCOUNT_MINUTES || cooldownRemainingMs > 0 || loanOutstanding > 0
+        ? 0
+        : Math.min(dynamicLimit, remainingWindowLimit);
+
+    return {
+        accountAgeMinutes,
+        availableLimit,
+        borrowedThisWindow,
+        cooldownRemainingMs,
+        dynamicLimit,
+        loanOutstanding,
+        remainingWindowLimit,
+        windowActive
+    };
+}
+
+async function logSystemFailure(source, error, context = {}) {
+    try {
+        await addDoc(collection(db, "systemLogs"), {
+            source,
+            message: toErrorMessage(error),
+            context,
+            level: 'error',
+            timestamp: serverTimestamp()
+        });
+    } catch (_) {
+        // Logging failure should never block the main flow.
+    }
+}
+
+async function ensureUserDefaults(uid, data) {
+    const patch = {};
+    if (!Array.isArray(data.contacts)) patch.contacts = [];
+    if (!Array.isArray(data.readNotificationIds)) patch.readNotificationIds = [];
+    if (!Number.isFinite(Number(data.loanOutstanding))) patch.loanOutstanding = 0;
+    if (!Number.isFinite(Number(data.borrowedThisWindow))) patch.borrowedThisWindow = 0;
+    if (!('loanWindowStartedAt' in data)) patch.loanWindowStartedAt = null;
+    if (!('lastLoanAt' in data)) patch.lastLoanAt = null;
+    if (!('lastLoanRepaymentAt' in data)) patch.lastLoanRepaymentAt = null;
+    if (Object.keys(patch).length) {
+        await updateDoc(doc(db, "users", uid), patch);
+    }
+}
+
 function cleanupListeners() {
     if (unsubUser) unsubUser();
     if (unsubTransactions) unsubTransactions();
     if (unsubCity) unsubCity();
     if (unsubPolls) unsubPolls();
+    if (unsubAdminTransactions) unsubAdminTransactions();
+    if (unsubAdminLogs) unsubAdminLogs();
+    if (unsubRiskUsers) unsubRiskUsers();
     unsubUser = null;
     unsubTransactions = null;
     unsubCity = null;
     unsubPolls = null;
+    unsubAdminTransactions = null;
+    unsubAdminLogs = null;
+    unsubRiskUsers = null;
+    currentAdminTransactions = [];
+    currentAdminLogs = [];
+    currentRiskUsers = [];
+    currentNotifications = [];
 }
 
 // --- SONS & UI ---
@@ -225,9 +346,16 @@ authForm.addEventListener('submit', async (e) => {
                 name: name, email: email, role: role, pinHash, pinSalt,
                 shortId: shortId,
                 balance: 1000.00,
-                savingsBalance: 0, // NOVO: Poupança
-                stocks: { glasscoin: 0 }, // NOVO: Ações
-                lastDailyClaim: null, // NOVO: Auxílio
+                savingsBalance: 0,
+                stocks: { glasscoin: 0 },
+                contacts: [],
+                readNotificationIds: [],
+                lastDailyClaim: null,
+                loanOutstanding: 0,
+                borrowedThisWindow: 0,
+                loanWindowStartedAt: null,
+                lastLoanAt: null,
+                lastLoanRepaymentAt: null,
                 status: 'active',
                 lastInterestDate: serverTimestamp(),
                 lastDebtInterestDate: serverTimestamp(),
@@ -266,6 +394,7 @@ function initializeUser(uid) {
         }
 
         currentUser = { ...docSnap.data(), uid };
+        ensureUserDefaults(uid, currentUser).catch(() => {});
         if (currentUser.status === 'banned') {
             signOut(auth);
             alert("Conta Banida");
@@ -286,17 +415,31 @@ function initializeUser(uid) {
         document.getElementById('user-stock-count').innerText = Number(currentUser.stocks?.glasscoin || 0);
 
         const loanBadge = document.getElementById('loan-indicator');
-        loanBadge.style.display = balance < 0 ? 'inline-block' : 'none';
+        loanBadge.style.display = balance < 0 || Number(currentUser.loanOutstanding || 0) > 0 ? 'inline-block' : 'none';
 
         checkDailyRewardStatus();
         updateTransferPreview();
         generateQR();
+        renderLoanPanel();
+        renderContactLists();
+        renderNotifications();
 
         if (currentUser.role === 'admin') {
             document.getElementById('admin-btn').classList.remove('hidden');
             initAdminPanel();
+            initAdminMonitor();
         } else {
             document.getElementById('admin-btn').classList.add('hidden');
+            if (unsubAdminTransactions) unsubAdminTransactions();
+            if (unsubAdminLogs) unsubAdminLogs();
+            if (unsubRiskUsers) unsubRiskUsers();
+            unsubAdminTransactions = null;
+            unsubAdminLogs = null;
+            unsubRiskUsers = null;
+            currentAdminTransactions = [];
+            currentAdminLogs = [];
+            currentRiskUsers = [];
+            renderAdminMonitor();
         }
 
         await processInterests(uid);
@@ -319,10 +462,37 @@ async function processInterests(uid) {
     const savingsMinutes = (now - lastSavingsDate) / (1000 * 60);
 
     const debtIntervals = Math.floor(debtMinutes / 10);
-    if (Number(currentUser.balance || 0) < 0 && debtIntervals > 0) {
+    if (Number(currentUser.loanOutstanding || 0) > 0 && debtIntervals > 0) {
+        const currentDebt = Number(currentUser.loanOutstanding || 0);
+        const newDebt = Number((currentDebt * Math.pow(1.05, debtIntervals)).toFixed(2));
+        const interestAmount = Number((newDebt - currentDebt).toFixed(2));
+
+        await runTransaction(db, async (t) => {
+            const userRef = doc(db, "users", uid);
+            t.update(userRef, {
+                loanOutstanding: newDebt,
+                lastInterestDate: serverTimestamp(),
+                lastDebtInterestDate: serverTimestamp()
+            });
+            const txRef = doc(collection(db, "transactions"));
+            t.set(txRef, buildTransactionRecord(txRef.id, {
+                senderId: 'SYSTEM',
+                senderName: 'Banco Central',
+                senderShortId: 'SYSTEM',
+                receiverId: uid,
+                receiverName: currentUser.name,
+                receiverShortId: currentUser.shortId || uid,
+                amount: interestAmount,
+                type: 'interest_loan',
+                method: 'Sistema',
+                participants: [uid]
+            }));
+        });
+        showToast(`Juros do emprestimo: ${formatMoney(interestAmount)}`, 'error');
+    } else if (Number(currentUser.balance || 0) < 0 && debtIntervals > 0) {
         const currentDebt = Number(currentUser.balance || 0);
-        const newDebt = currentDebt * Math.pow(1.05, debtIntervals);
-        const interestAmount = Math.abs(newDebt - currentDebt);
+        const newDebt = Number((currentDebt * Math.pow(1.05, debtIntervals)).toFixed(2));
+        const interestAmount = Number(Math.abs(newDebt - currentDebt).toFixed(2));
 
         await runTransaction(db, async (t) => {
             const userRef = doc(db, "users", uid);
@@ -332,14 +502,20 @@ async function processInterests(uid) {
                 lastDebtInterestDate: serverTimestamp()
             });
             const txRef = doc(collection(db, "transactions"));
-            t.set(txRef, {
-                senderId: 'SYSTEM', senderName: 'Banco Central',
-                receiverId: uid, receiverName: currentUser.name,
-                amount: interestAmount, type: 'interest_debt',
-                timestamp: serverTimestamp(), participants: [uid]
-            });
+            t.set(txRef, buildTransactionRecord(txRef.id, {
+                senderId: 'SYSTEM',
+                senderName: 'Banco Central',
+                senderShortId: 'SYSTEM',
+                receiverId: uid,
+                receiverName: currentUser.name,
+                receiverShortId: currentUser.shortId || uid,
+                amount: interestAmount,
+                type: 'interest_overdraft',
+                method: 'Sistema',
+                participants: [uid]
+            }));
         });
-        showToast(`Juros de Dívida aplicados: ${formatMoney(interestAmount)}`, 'error');
+        showToast(`Juros de saldo negativo: ${formatMoney(interestAmount)}`, 'error');
     }
 
     const savingsIntervals = Math.floor(savingsMinutes / 60);
@@ -354,12 +530,19 @@ async function processInterests(uid) {
             lastSavingsInterestDate: serverTimestamp()
         });
 
-        await addDoc(collection(db, "transactions"), {
-            senderId: 'SYSTEM', senderName: 'Cofre Rendimento',
-            receiverId: uid, receiverName: currentUser.name,
-            amount: yieldAmount, type: 'interest_yield',
-            timestamp: serverTimestamp(), participants: [uid]
-        });
+        const txRef = doc(collection(db, "transactions"));
+        await setDoc(txRef, buildTransactionRecord(txRef.id, {
+            senderId: 'SYSTEM',
+            senderName: 'Cofre Rendimento',
+            senderShortId: 'SYSTEM',
+            receiverId: uid,
+            receiverName: currentUser.name,
+            receiverShortId: currentUser.shortId || uid,
+            amount: yieldAmount,
+            type: 'interest_yield',
+            method: 'Sistema',
+            participants: [uid]
+        }));
         showToast(`Rendimento da Poupança: +${formatMoney(yieldAmount)}`);
     }
 }
@@ -389,18 +572,31 @@ function syncSystemData() {
         }
     });
 
-    const q = query(collection(db, "polls"), where("status", "==", "open"));
-    unsubPolls = onSnapshot(q, (snap) => {
+    unsubPolls = onSnapshot(collection(db, "polls"), (snap) => {
         const list = document.getElementById('polls-list');
         if (!list) return;
         list.innerHTML = "";
 
+        const polls = [];
         snap.forEach(docSnap => {
-            const p = docSnap.data();
+            polls.push({ id: docSnap.id, ...docSnap.data() });
+        });
+
+        const visiblePolls = polls
+            .filter((poll) => ['open', 'aguardando_verba', 'funded'].includes(poll.status || 'open'))
+            .sort((a, b) => timestampToMillis(b.createdAt, 0) - timestampToMillis(a.createdAt, 0));
+
+        if (!visiblePolls.length) {
+            renderEmptyState(list, 'Nenhuma enquete ativa no momento.');
+            return;
+        }
+
+        visiblePolls.forEach((p) => {
             const votes = Number(p.votes || 0);
             const targetVotes = Math.max(1, Number(p.targetVotes || 1));
             const cost = Number(p.cost || 0);
             const percent = Math.min(100, (votes / targetVotes) * 100);
+            const pollStatus = p.status || 'open';
 
             const div = document.createElement('div');
             div.className = 'poll-card';
@@ -433,14 +629,28 @@ function syncSystemData() {
             const votesSmall = document.createElement('small');
             votesSmall.textContent = `${votes} / ${targetVotes} votos`;
 
+            const statusSmall = document.createElement('small');
+            statusSmall.textContent = pollStatus === 'funded'
+                ? 'Projeto financiado'
+                : pollStatus === 'aguardando_verba'
+                    ? 'Meta atingida, aguardando verba'
+                    : 'Aberta para votos';
+
             const voteBtn = document.createElement('button');
-            voteBtn.textContent = 'Votar';
+            voteBtn.textContent = pollStatus === 'open' ? 'Votar' : 'Acompanhar';
             voteBtn.style.width = 'auto';
             voteBtn.style.padding = '5px 15px';
             voteBtn.style.margin = '0';
-            voteBtn.addEventListener('click', () => window.votePoll(docSnap.id));
+            voteBtn.disabled = pollStatus !== 'open';
+            voteBtn.addEventListener('click', () => window.votePoll(p.id));
 
-            rowBottom.appendChild(votesSmall);
+            const copyWrap = document.createElement('div');
+            copyWrap.style.display = 'flex';
+            copyWrap.style.flexDirection = 'column';
+            copyWrap.appendChild(votesSmall);
+            copyWrap.appendChild(statusSmall);
+
+            rowBottom.appendChild(copyWrap);
             rowBottom.appendChild(voteBtn);
 
             div.appendChild(rowTop);
@@ -584,17 +794,476 @@ window.claimDailyReward = async () => {
             });
 
             const txRef = doc(collection(db, "transactions"));
-            t.set(txRef, {
-                senderId: CITY_HALL_ID, senderName: "Prefeitura (Auxílio)",
-                receiverId: currentUser.uid, receiverName: currentUser.name,
-                amount: dailyRewardValue, type: 'welfare',
-                timestamp: serverTimestamp(), participants: [currentUser.uid, CITY_HALL_ID]
-            });
+            t.set(txRef, buildTransactionRecord(txRef.id, {
+                senderId: CITY_HALL_ID,
+                senderName: "Prefeitura (Auxilio)",
+                senderShortId: 'CITY',
+                receiverId: currentUser.uid,
+                receiverName: currentUser.name,
+                receiverShortId: currentUser.shortId || currentUser.uid,
+                amount: dailyRewardValue,
+                type: 'welfare',
+                method: 'Sistema',
+                participants: [currentUser.uid, CITY_HALL_ID]
+            }));
         });
         showToast(`Recebeu ${formatMoney(dailyRewardValue)}!`);
         document.getElementById('daily-reward-area').classList.add('hidden');
-    } catch(e) { showToast(toErrorMessage(e), 'error'); }
+    } catch(e) {
+        logSystemFailure('claimDailyReward', e, { userId: currentUser?.uid }).catch(() => {});
+        showToast(toErrorMessage(e), 'error');
+    }
 };
+
+function renderEmptyState(container, message) {
+    if (!container) return;
+    const item = document.createElement('div');
+    item.className = 'monitor-item';
+    item.innerText = message;
+    container.appendChild(item);
+}
+
+function sortContacts(contacts) {
+    return [...contacts].sort((a, b) => {
+        if (Boolean(b.isFavorite) !== Boolean(a.isFavorite)) return Number(Boolean(b.isFavorite)) - Number(Boolean(a.isFavorite));
+        return Number(b.lastUsedAt || 0) - Number(a.lastUsedAt || 0);
+    }).slice(0, MAX_CONTACTS);
+}
+
+async function persistContacts(mutator) {
+    if (!currentUser) return;
+    const nextContacts = sortContacts(mutator(getUserContacts()));
+    await updateDoc(doc(db, "users", currentUser.uid), { contacts: nextContacts });
+}
+
+async function saveContactUsage(shortId, nameSnapshot) {
+    await persistContacts((contacts) => {
+        const now = Date.now();
+        const next = [...contacts];
+        const index = next.findIndex((contact) => contact.shortId === shortId);
+        if (index >= 0) {
+            next[index] = {
+                ...next[index],
+                nameSnapshot: nameSnapshot || next[index].nameSnapshot || shortId,
+                lastUsedAt: now,
+                useCount: Number(next[index].useCount || 0) + 1
+            };
+        } else {
+            next.push({
+                shortId,
+                nickname: '',
+                nameSnapshot: nameSnapshot || shortId,
+                isFavorite: false,
+                lastUsedAt: now,
+                useCount: 1
+            });
+        }
+        return next;
+    });
+}
+
+async function toggleFavoriteContact(shortId) {
+    await persistContacts((contacts) => contacts.map((contact) => contact.shortId === shortId
+        ? { ...contact, isFavorite: !contact.isFavorite }
+        : contact));
+}
+
+async function renameContact(shortId) {
+    const current = getUserContacts().find((contact) => contact.shortId === shortId);
+    const nickname = prompt('Apelido para este contato:', current?.nickname || current?.nameSnapshot || shortId);
+    if (nickname === null) return;
+    await persistContacts((contacts) => contacts.map((contact) => contact.shortId === shortId
+        ? { ...contact, nickname: nickname.trim() }
+        : contact));
+}
+
+function useContact(shortId) {
+    const input = document.getElementById('dest-id');
+    if (!input) return;
+    input.value = shortId;
+    navTo('transfer');
+    updateTransferPreview();
+}
+
+function renderContactGroup(containerId, contacts, emptyMessage) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    container.innerHTML = '';
+    if (!contacts.length) {
+        renderEmptyState(container, emptyMessage);
+        return;
+    }
+
+    contacts.forEach((contact) => {
+        const card = document.createElement('div');
+        card.className = 'contact-card';
+
+        const copy = document.createElement('div');
+        copy.className = 'contact-copy';
+
+        const title = document.createElement('strong');
+        title.innerText = contact.nickname || contact.nameSnapshot || contact.shortId;
+
+        const meta = document.createElement('small');
+        meta.innerText = `${contact.shortId} • ${Number(contact.useCount || 0)}x`;
+
+        copy.appendChild(title);
+        copy.appendChild(meta);
+
+        const actions = document.createElement('div');
+        actions.className = 'contact-actions';
+
+        const fillButton = document.createElement('button');
+        fillButton.className = 'secondary small-btn';
+        fillButton.innerText = 'Usar';
+        fillButton.addEventListener('click', () => useContact(contact.shortId));
+
+        const favoriteButton = document.createElement('button');
+        favoriteButton.className = 'secondary small-btn';
+        favoriteButton.innerText = contact.isFavorite ? 'Desfavoritar' : 'Favoritar';
+        favoriteButton.addEventListener('click', () => toggleFavoriteContact(contact.shortId).catch((error) => {
+            logSystemFailure('toggleFavoriteContact', error, { shortId: contact.shortId }).catch(() => {});
+            showToast(toErrorMessage(error), 'error');
+        }));
+
+        const renameButton = document.createElement('button');
+        renameButton.className = 'secondary small-btn';
+        renameButton.innerText = 'Apelido';
+        renameButton.addEventListener('click', () => renameContact(contact.shortId).catch((error) => {
+            logSystemFailure('renameContact', error, { shortId: contact.shortId }).catch(() => {});
+            showToast(toErrorMessage(error), 'error');
+        }));
+
+        actions.appendChild(fillButton);
+        actions.appendChild(favoriteButton);
+        actions.appendChild(renameButton);
+
+        card.appendChild(copy);
+        card.appendChild(actions);
+        container.appendChild(card);
+    });
+}
+
+function renderContactLists() {
+    const contacts = sortContacts(getUserContacts());
+    const favorites = contacts.filter((contact) => contact.isFavorite);
+    const recents = contacts.filter((contact) => !contact.isFavorite);
+    renderContactGroup('favorite-contacts', favorites, 'Nenhum favorito salvo ainda.');
+    renderContactGroup('recent-contacts', recents, 'As ultimas transferencias aparecem aqui.');
+}
+
+function buildNotificationsFromTransactions() {
+    if (!currentUser) return [];
+    const items = [];
+
+    currentTransactions.forEach((transaction) => {
+        const executedAt = timestampToDate(transaction.timestamp, new Date(0));
+        const taxAmount = Number(transaction.tax || 0);
+        const totalAmount = Number(transaction.total || (Number(transaction.amount || 0) + taxAmount));
+        const senderIsCurrent = transaction.senderId === currentUser.uid;
+        const receiverIsCurrent = transaction.receiverId === currentUser.uid;
+
+        if (transaction.type === 'transfer') {
+            if (senderIsCurrent) {
+                items.push({
+                    id: `${transaction.id}:sent`,
+                    transactionId: transaction.id,
+                    type: 'enviado',
+                    title: 'Pix enviado',
+                    description: `Para ${transaction.receiverName || transaction.receiverShortId || 'destino'}`,
+                    amount: totalAmount,
+                    date: executedAt
+                });
+                if (taxAmount > 0) {
+                    items.push({
+                        id: `${transaction.id}:tax`,
+                        transactionId: transaction.id,
+                        type: 'imposto',
+                        title: 'Imposto debitado',
+                        description: 'Taxa municipal aplicada na transferencia',
+                        amount: taxAmount,
+                        date: executedAt
+                    });
+                }
+            } else if (receiverIsCurrent) {
+                items.push({
+                    id: `${transaction.id}:received`,
+                    transactionId: transaction.id,
+                    type: 'recebido',
+                    title: 'Pix recebido',
+                    description: `De ${transaction.senderName || transaction.senderShortId || 'origem'}`,
+                    amount: Number(transaction.amount || 0),
+                    date: executedAt
+                });
+            }
+        }
+
+        if (transaction.type === 'interest_yield') {
+            items.push({
+                id: `${transaction.id}:yield`,
+                transactionId: transaction.id,
+                type: 'juros',
+                title: 'Rendimento creditado',
+                description: 'Juros da poupanca',
+                amount: Number(transaction.amount || 0),
+                date: executedAt
+            });
+        }
+
+        if (transaction.type === 'interest_loan' || transaction.type === 'interest_overdraft') {
+            items.push({
+                id: `${transaction.id}:interest`,
+                transactionId: transaction.id,
+                type: 'juros',
+                title: 'Juros aplicados',
+                description: transaction.type === 'interest_loan' ? 'Juros do emprestimo ativo' : 'Juros de saldo negativo',
+                amount: Number(transaction.amount || 0),
+                date: executedAt
+            });
+        }
+
+        if (transaction.type === 'loan') {
+            items.push({
+                id: `${transaction.id}:loan`,
+                transactionId: transaction.id,
+                type: 'recebido',
+                title: 'Credito aprovado',
+                description: 'Emprestimo liberado pelo banco',
+                amount: Number(transaction.amount || 0),
+                date: executedAt
+            });
+        }
+
+        if (transaction.type === 'loan_payment') {
+            items.push({
+                id: `${transaction.id}:loan-payment`,
+                transactionId: transaction.id,
+                type: 'enviado',
+                title: 'Amortizacao registrada',
+                description: 'Pagamento de divida bancaria',
+                amount: Number(transaction.amount || 0),
+                date: executedAt
+            });
+        }
+    });
+
+    return items
+        .sort((a, b) => b.date - a.date)
+        .slice(0, MAX_NOTIFICATION_ITEMS);
+}
+
+async function markNotificationRead(notificationId) {
+    if (!currentUser) return;
+    const next = [...new Set([...getReadNotificationIds(), notificationId])].slice(-MAX_NOTIFICATION_READ_IDS);
+    await updateDoc(doc(db, "users", currentUser.uid), { readNotificationIds: next });
+}
+
+window.markAllNotificationsRead = async () => {
+    if (!currentUser) return;
+    try {
+        const next = [...new Set([...getReadNotificationIds(), ...currentNotifications.map((item) => item.id)])].slice(-MAX_NOTIFICATION_READ_IDS);
+        await updateDoc(doc(db, "users", currentUser.uid), { readNotificationIds: next });
+    } catch (error) {
+        logSystemFailure('markAllNotificationsRead', error, { userId: currentUser.uid }).catch(() => {});
+        showToast(toErrorMessage(error), 'error');
+    }
+};
+
+function renderNotifications() {
+    const list = document.getElementById('notifications-list');
+    const badge = document.getElementById('notification-badge');
+    if (!list || !badge) return;
+
+    currentNotifications = buildNotificationsFromTransactions();
+    const readIds = new Set(getReadNotificationIds());
+    const unreadCount = currentNotifications.filter((item) => !readIds.has(item.id)).length;
+    badge.innerText = String(unreadCount);
+    badge.classList.toggle('hidden', unreadCount === 0);
+
+    list.innerHTML = '';
+    if (!currentNotifications.length) {
+        renderEmptyState(list, 'Nenhuma notificacao encontrada.');
+        return;
+    }
+
+    currentNotifications.forEach((notification) => {
+        const card = document.createElement('div');
+        card.className = `notification-card ${readIds.has(notification.id) ? '' : 'unread'}`.trim();
+
+        const copy = document.createElement('div');
+        copy.className = 'notification-copy';
+
+        const title = document.createElement('strong');
+        title.innerText = notification.title;
+
+        const description = document.createElement('small');
+        description.innerText = `${notification.description} • ${formatMoney(notification.amount)}`;
+
+        const meta = document.createElement('small');
+        meta.innerText = `${notification.type.toUpperCase()} • ${formatDateTime(notification.date)}`;
+
+        copy.appendChild(title);
+        copy.appendChild(description);
+        copy.appendChild(meta);
+
+        const actions = document.createElement('div');
+        actions.className = 'notification-actions';
+
+        const detailButton = document.createElement('button');
+        detailButton.className = 'secondary small-btn';
+        detailButton.innerText = 'Detalhes';
+        detailButton.addEventListener('click', () => {
+            const transaction = currentTransactions.find((item) => item.id === notification.transactionId);
+            if (transaction) openTransactionDetails(transaction);
+        });
+
+        actions.appendChild(detailButton);
+        if (!readIds.has(notification.id)) {
+            const readButton = document.createElement('button');
+            readButton.className = 'secondary small-btn';
+            readButton.innerText = 'Marcar lido';
+            readButton.addEventListener('click', () => markNotificationRead(notification.id).catch((error) => {
+                logSystemFailure('markNotificationRead', error, { notificationId: notification.id }).catch(() => {});
+                showToast(toErrorMessage(error), 'error');
+            }));
+            actions.appendChild(readButton);
+        }
+
+        card.appendChild(copy);
+        card.appendChild(actions);
+        list.appendChild(card);
+    });
+}
+
+function renderAdminList(containerId, items, emptyMessage, renderer) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    container.innerHTML = '';
+    if (!items.length) {
+        renderEmptyState(container, emptyMessage);
+        return;
+    }
+    items.forEach((item) => container.appendChild(renderer(item)));
+}
+
+function renderAdminMonitor() {
+    renderAdminList('admin-transactions-list', currentAdminTransactions, 'Nenhuma transacao monitorada.', (transaction) => {
+        const item = document.createElement('div');
+        item.className = 'monitor-item';
+        const title = document.createElement('strong');
+        title.innerText = transaction.txId || formatTransactionId(transaction.id);
+        const meta = document.createElement('small');
+        meta.innerText = `${(transaction.type || 'transaction').toUpperCase()} • ${formatMoney(transaction.total || transaction.amount || 0)} • ${formatStatus(transaction.status)}`;
+        item.appendChild(title);
+        item.appendChild(meta);
+        return item;
+    });
+
+    renderAdminList('admin-failures-list', currentAdminLogs, 'Nenhuma falha registrada.', (failure) => {
+        const item = document.createElement('div');
+        item.className = 'monitor-item';
+        const title = document.createElement('strong');
+        title.innerText = failure.source || 'app';
+        const meta = document.createElement('small');
+        meta.innerText = `${failure.message || 'Falha sem mensagem'} • ${formatDateTime(timestampToDate(failure.timestamp, new Date()))}`;
+        item.appendChild(title);
+        item.appendChild(meta);
+        return item;
+    });
+
+    renderAdminList('admin-alerts-list', currentRiskUsers, 'Nenhum alerta no momento.', (user) => {
+        const item = document.createElement('div');
+        item.className = 'monitor-item';
+        const title = document.createElement('strong');
+        title.innerText = `${user.name || 'Usuario'} (${user.shortId || '---'})`;
+        const meta = document.createElement('small');
+        meta.innerText = `Saldo: ${formatMoney(user.balance || 0)} • Divida: ${formatMoney(user.loanOutstanding || 0)}`;
+        item.appendChild(title);
+        item.appendChild(meta);
+        return item;
+    });
+}
+
+function initAdminMonitor() {
+    if (currentUser?.role !== 'admin') return;
+    if (!unsubAdminTransactions) {
+        const q = query(collection(db, "transactions"), orderBy("timestamp", "desc"), limit(50));
+        unsubAdminTransactions = onSnapshot(q, (snap) => {
+            currentAdminTransactions = [];
+            snap.forEach((docSnap) => currentAdminTransactions.push({ id: docSnap.id, ...docSnap.data() }));
+            renderAdminMonitor();
+        });
+    }
+
+    if (!unsubAdminLogs) {
+        const q = query(collection(db, "systemLogs"), orderBy("timestamp", "desc"), limit(50));
+        unsubAdminLogs = onSnapshot(q, (snap) => {
+            currentAdminLogs = [];
+            snap.forEach((docSnap) => {
+                const data = docSnap.data();
+                if (data.level === 'error') currentAdminLogs.push({ id: docSnap.id, ...data });
+            });
+            renderAdminMonitor();
+        });
+    }
+
+    if (!unsubRiskUsers) {
+        unsubRiskUsers = onSnapshot(collection(db, "users"), (snap) => {
+            currentRiskUsers = [];
+            snap.forEach((docSnap) => {
+                if (docSnap.id === CITY_HALL_ID) return;
+                const data = docSnap.data();
+                if (Number(data.balance || 0) <= HIGH_NEGATIVE_ALERT || Number(data.loanOutstanding || 0) >= LOAN_LIMIT) {
+                    currentRiskUsers.push({ id: docSnap.id, ...data });
+                }
+            });
+            currentRiskUsers.sort((a, b) => (Number(a.balance || 0) + Number(a.loanOutstanding || 0)) - (Number(b.balance || 0) + Number(b.loanOutstanding || 0)));
+            renderAdminMonitor();
+        });
+    }
+}
+
+function renderLoanPanel() {
+    if (!currentUser) return;
+    const state = getLoanState(currentUser);
+    fillText('loan-limit-display', formatMoney(state.availableLimit));
+    fillText('loan-debt-display', formatMoney(state.loanOutstanding));
+
+    if (state.accountAgeMinutes < LOAN_MIN_ACCOUNT_MINUTES) {
+        fillText('loan-status-copy', `Conta nova. Aguarde ${Math.ceil(LOAN_MIN_ACCOUNT_MINUTES - state.accountAgeMinutes)} min para credito.`);
+    } else if (state.loanOutstanding > 0) {
+        fillText('loan-status-copy', 'Existe uma divida ativa. Quite antes de novo credito.');
+    } else if (state.cooldownRemainingMs > 0) {
+        fillText('loan-status-copy', `Novo credito liberado em ${Math.ceil(state.cooldownRemainingMs / (60 * 60 * 1000))}h.`);
+    } else {
+        fillText('loan-status-copy', `Limite calculado pelo saldo atual: ${formatMoney(state.dynamicLimit)}.`);
+    }
+
+    fillText('loan-next-window', `Disponivel na janela de 24h: ${formatMoney(state.remainingWindowLimit)}.`);
+}
+
+function openTransactionDetails(transaction) {
+    showTransferReceipt({
+        title: 'GLASS BANK',
+        subtitle: 'Detalhes da transacao',
+        status: transaction.status || 'concluida',
+        txId: transaction.txId || formatTransactionId(transaction.id),
+        executedAt: timestampToDate(transaction.timestamp, new Date()),
+        method: transaction.method || (transaction.type === 'transfer' ? 'Pix' : 'Sistema'),
+        senderName: transaction.senderName || 'Sistema',
+        senderId: transaction.senderShortId || (transaction.senderId === currentUser?.uid ? currentUser.shortId : transaction.senderId) || '-',
+        receiverName: transaction.receiverName || 'Sistema',
+        receiverId: transaction.receiverShortId || (transaction.receiverId === currentUser?.uid ? currentUser.shortId : transaction.receiverId) || '-',
+        amount: Number(transaction.amount || 0),
+        tax: Number(transaction.tax || 0),
+        total: Number(transaction.total || (Number(transaction.amount || 0) + Number(transaction.tax || 0)))
+    }).catch((error) => {
+        logSystemFailure('openTransactionDetails', error, { transactionId: transaction.id }).catch(() => {});
+        showToast(toErrorMessage(error), 'error');
+    });
+}
+
+window.checkNotifications = () => navTo('notifications');
 
 // --- ADMIN FEATURES ---
 // Slider Logic
@@ -655,6 +1324,7 @@ window.updateGlobalTax = async () => {
         await updateDoc(doc(db, "users", CITY_HALL_ID), { customTax: val });
         showToast("Taxa Atualizada!");
     } catch (e) {
+        logSystemFailure('updateGlobalTax', e, { userId: currentUser?.uid, value: val }).catch(() => {});
         showToast(toErrorMessage(e), "error");
     }
 };
@@ -673,6 +1343,7 @@ window.updateDailyReward = async () => {
         await updateDoc(doc(db, "users", CITY_HALL_ID), { dailyRewardAmount: amount });
         showToast("Auxílio diário atualizado!");
     } catch (e) {
+        logSystemFailure('updateDailyReward', e, { userId: currentUser?.uid, amount }).catch(() => {});
         showToast(toErrorMessage(e), "error");
     }
 };
@@ -698,13 +1369,21 @@ window.createPoll = async () => {
 
     try {
         await addDoc(collection(db, "polls"), {
-            title, cost, targetVotes: target, votes: 0, status: 'open', voters: []
+            title,
+            cost,
+            targetVotes: target,
+            votes: 0,
+            status: 'open',
+            voters: [],
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp()
         });
         document.getElementById('poll-title').value = "";
         document.getElementById('poll-cost').value = "";
         document.getElementById('poll-target').value = "";
         showToast("Enquete Publicada");
     } catch (e) {
+        logSystemFailure('createPoll', e, { userId: currentUser?.uid, title }).catch(() => {});
         showToast(toErrorMessage(e), "error");
     }
 };
@@ -714,11 +1393,13 @@ window.votePoll = async (pollId) => {
 
     const pollRef = doc(db, "polls", pollId);
     try {
+        let voteMessage = "Voto computado!";
         await runTransaction(db, async (t) => {
             const pDoc = await t.get(pollRef);
             if (!pDoc.exists()) throw new Error("Enquete não encontrada.");
 
             const pollData = pDoc.data();
+            if ((pollData.status || 'open') !== 'open') throw new Error("Esta enquete nao aceita mais votos.");
             const voters = Array.isArray(pollData.voters) ? pollData.voters : [];
             if (voters.includes(currentUser.uid)) throw new Error("Você já votou!");
 
@@ -733,28 +1414,38 @@ window.votePoll = async (pollId) => {
                 if (Number(cityDoc.data().balance || 0) >= Number(pollData.cost || 0)) {
                     t.update(cityRef, { balance: increment(-Number(pollData.cost || 0)) });
                     newStatus = 'funded';
+                    voteMessage = "Meta atingida. Projeto financiado!";
+                    const txRef = doc(collection(db, "transactions"));
+                    t.set(txRef, buildTransactionRecord(txRef.id, {
+                        senderId: CITY_HALL_ID,
+                        senderName: 'Prefeitura',
+                        senderShortId: 'CITY',
+                        receiverId: 'PROJECT',
+                        receiverName: pollData.title || 'Projeto publico',
+                        receiverShortId: 'POLL',
+                        amount: Number(pollData.cost || 0),
+                        type: 'poll_fund',
+                        method: 'Tesouro',
+                        participants: [CITY_HALL_ID]
+                    }));
+                } else {
+                    newStatus = 'aguardando_verba';
+                    voteMessage = "Meta atingida. Projeto aguardando verba.";
                 }
             }
 
-            t.update(pollRef, { votes: newVotes, voters: newVoters, status: newStatus });
+            t.update(pollRef, {
+                votes: newVotes,
+                voters: newVoters,
+                status: newStatus,
+                updatedAt: serverTimestamp()
+            });
         });
-        showToast("Voto computado!");
+        showToast(voteMessage);
     } catch (e) {
+        logSystemFailure('votePoll', e, { userId: currentUser?.uid, pollId }).catch(() => {});
         showToast(toErrorMessage(e), "error");
     }
-};
-
-window.checkNotifications = () => {
-    if (!currentUser) return;
-    if (!currentTransactions.length) {
-        showToast("Sem notificações novas.");
-        return;
-    }
-
-    const tx = currentTransactions[0];
-    const isSender = tx.senderId === currentUser.uid;
-    const name = tx.type === 'transfer' ? (isSender ? tx.receiverName : tx.senderName) : (tx.senderName || 'Sistema');
-    showToast(`${(tx.type || 'transaction').toUpperCase()} • ${name} • ${formatMoney(tx.amount || 0)}`);
 };
 
 window.takeLoan = async () => {
@@ -763,12 +1454,25 @@ window.takeLoan = async () => {
     if (!input) return;
 
     const amount = toNumber(input.value);
+    const state = getLoanState(currentUser);
     if (!Number.isFinite(amount) || amount <= 0) {
         showToast("Informe um valor válido.", "error");
         return;
     }
-    if (amount > LOAN_LIMIT) {
-        showToast(`Limite máximo por solicitação: ${formatMoney(LOAN_LIMIT)}.`, "error");
+    if (state.accountAgeMinutes < LOAN_MIN_ACCOUNT_MINUTES) {
+        showToast("Conta muito nova para emprestimo.", "error");
+        return;
+    }
+    if (state.loanOutstanding > 0) {
+        showToast("Quite sua divida atual antes de novo emprestimo.", "error");
+        return;
+    }
+    if (state.cooldownRemainingMs > 0) {
+        showToast("Existe um intervalo minimo entre emprestimos.", "error");
+        return;
+    }
+    if (amount > state.availableLimit) {
+        showToast(`Limite disponivel agora: ${formatMoney(state.availableLimit)}.`, "error");
         return;
     }
     if (Number(currentUser.balance || 0) < 0) {
@@ -781,27 +1485,102 @@ window.takeLoan = async () => {
             const userRef = doc(db, "users", currentUser.uid);
             const userDoc = await t.get(userRef);
             if (!userDoc.exists()) throw new Error("Usuário não encontrado.");
-            if (Number(userDoc.data().balance || 0) < 0) throw new Error("Você já possui dívida ativa.");
+            const userData = userDoc.data();
+            const freshState = getLoanState(userData);
+            if (Number(userData.balance || 0) < 0) throw new Error("Você já possui saldo negativo.");
+            if (freshState.loanOutstanding > 0) throw new Error("Voce ja possui uma divida ativa.");
+            if (freshState.accountAgeMinutes < LOAN_MIN_ACCOUNT_MINUTES) throw new Error("Conta nova demais para credito.");
+            if (freshState.cooldownRemainingMs > 0) throw new Error("Aguarde o fim do intervalo de credito.");
+            if (amount > freshState.availableLimit) throw new Error(`Limite atual: ${formatMoney(freshState.availableLimit)}.`);
 
             t.update(userRef, {
                 balance: increment(amount),
+                loanOutstanding: Number((freshState.loanOutstanding + amount).toFixed(2)),
+                borrowedThisWindow: freshState.windowActive ? Number((freshState.borrowedThisWindow + amount).toFixed(2)) : amount,
+                loanWindowStartedAt: freshState.windowActive ? userData.loanWindowStartedAt : serverTimestamp(),
+                lastLoanAt: serverTimestamp(),
                 lastDebtInterestDate: serverTimestamp()
             });
 
             const txRef = doc(collection(db, "transactions"));
-            t.set(txRef, {
-                senderId: 'SYSTEM', senderName: 'Crédito Bancário',
-                receiverId: currentUser.uid, receiverName: currentUser.name,
-                amount: amount, type: 'loan',
-                timestamp: serverTimestamp(), participants: [currentUser.uid]
-            });
+            t.set(txRef, buildTransactionRecord(txRef.id, {
+                senderId: 'SYSTEM',
+                senderName: 'Credito Bancario',
+                senderShortId: 'BANK',
+                receiverId: currentUser.uid,
+                receiverName: currentUser.name,
+                receiverShortId: currentUser.shortId || currentUser.uid,
+                amount,
+                type: 'loan',
+                method: 'Credito',
+                participants: [currentUser.uid]
+            }));
         });
 
         input.value = "";
-        showToast(`Empréstimo aprovado: ${formatMoney(amount)}`);
+        document.getElementById('loan-repay-input').value = "";
+        showToast(`Emprestimo aprovado: ${formatMoney(amount)}`);
         navTo('dashboard');
     } catch (e) {
+        logSystemFailure('takeLoan', e, { userId: currentUser?.uid, amount }).catch(() => {});
         showToast(toErrorMessage(e), "error");
+    }
+};
+
+window.repayLoan = async () => {
+    if (!currentUser) return;
+    const input = document.getElementById('loan-repay-input');
+    if (!input) return;
+
+    const requestedAmount = toNumber(input.value);
+    const maxPossible = Math.min(Number(currentUser.balance || 0), Number(currentUser.loanOutstanding || 0));
+    const amount = Number.isFinite(requestedAmount) && requestedAmount > 0 ? requestedAmount : maxPossible;
+
+    if (!Number.isFinite(amount) || amount <= 0) {
+        showToast("Informe um valor valido para amortizar.", "error");
+        return;
+    }
+
+    try {
+        await runTransaction(db, async (t) => {
+            const userRef = doc(db, "users", currentUser.uid);
+            const userDoc = await t.get(userRef);
+            if (!userDoc.exists()) throw new Error("Usuário não encontrado.");
+
+            const userData = userDoc.data();
+            const balance = Number(userData.balance || 0);
+            const outstanding = Number(userData.loanOutstanding || 0);
+            const payment = Math.min(amount, balance, outstanding);
+
+            if (payment <= 0) throw new Error("Sem saldo ou divida suficiente para amortizar.");
+
+            t.update(userRef, {
+                balance: Number((balance - payment).toFixed(2)),
+                loanOutstanding: Number((outstanding - payment).toFixed(2)),
+                lastLoanRepaymentAt: serverTimestamp(),
+                lastDebtInterestDate: serverTimestamp()
+            });
+
+            const txRef = doc(collection(db, "transactions"));
+            t.set(txRef, buildTransactionRecord(txRef.id, {
+                senderId: currentUser.uid,
+                senderName: currentUser.name,
+                senderShortId: currentUser.shortId || currentUser.uid,
+                receiverId: 'SYSTEM',
+                receiverName: 'Banco Central',
+                receiverShortId: 'BANK',
+                amount: payment,
+                type: 'loan_payment',
+                method: 'Debito',
+                participants: [currentUser.uid]
+            }));
+        });
+
+        input.value = "";
+        showToast("Amortizacao registrada.");
+    } catch (error) {
+        logSystemFailure('repayLoan', error, { userId: currentUser?.uid, amount }).catch(() => {});
+        showToast(toErrorMessage(error), 'error');
     }
 };
 
@@ -920,15 +1699,19 @@ async function showTransferReceipt(data) {
         executedAt: executedAt.toISOString()
     });
 
+    fillText('receipt-title', data.title || 'GLASS BANK');
+    fillText('receipt-subtitle', data.subtitle || 'Comprovante de Transacao');
     fillText('rcpt-amount', formatMoney(data.amount));
     fillText('rcpt-tax', formatMoney(data.tax));
     fillText('rcpt-total', formatMoney(data.total));
+    fillText('rcpt-status', formatStatus(data.status || 'concluida'));
     fillText('rcpt-txid', data.txId || '-');
-    fillText('rcpt-date', new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' }).format(executedAt));
+    fillText('rcpt-date', formatDateTime(executedAt));
     fillText('rcpt-method', data.method || 'Pix');
     fillText('rcpt-sender', data.senderName || '-');
     fillText('rcpt-sender-id', data.senderId || '-');
     fillText('rcpt-receiver', data.receiverName || '-');
+    fillText('rcpt-receiver-id', data.receiverId || '-');
     fillText('rcpt-auth', authCode);
 
     modal.classList.remove('hidden');
@@ -996,19 +1779,35 @@ async function transferLogic(shortId, amount) {
 
             const txRef = doc(collection(db, "transactions"));
             receiptTxId = formatTransactionId(txRef.id);
-            t.set(txRef, {
-                senderId: currentUser.uid, senderName: currentUser.name,
-                receiverId: receiverUid, receiverName: receiverName,
-                amount: transferAmount, tax: tax, type: 'transfer',
-                timestamp: serverTimestamp(), participants: [currentUser.uid, receiverUid]
-            });
+            t.set(txRef, buildTransactionRecord(txRef.id, {
+                senderId: currentUser.uid,
+                senderName: currentUser.name,
+                senderShortId: currentUser.shortId || currentUser.uid,
+                receiverId: receiverUid,
+                receiverName: receiverName,
+                receiverShortId: receiverShortId,
+                amount: transferAmount,
+                tax,
+                total,
+                type: 'transfer',
+                method: 'Pix',
+                participants: [currentUser.uid, receiverUid]
+            }));
         });
 
+        try {
+            await saveContactUsage(receiverShortId, receiverName);
+        } catch (contactError) {
+            logSystemFailure('saveContactUsage', contactError, { userId: currentUser?.uid, receiverShortId }).catch(() => {});
+        }
         showToast("Transferência realizada!");
         navTo('dashboard');
         document.getElementById('transfer-form').reset();
         updateTransferPreview();
         await showTransferReceipt({
+            title: 'GLASS BANK',
+            subtitle: 'Comprovante de Transacao',
+            status: 'concluida',
             txId: receiptTxId,
             executedAt: receiptExecutedAt,
             method: 'Pix',
@@ -1022,6 +1821,11 @@ async function transferLogic(shortId, amount) {
         });
         return true;
     } catch (e) {
+        logSystemFailure('transferLogic', e, {
+            userId: currentUser?.uid,
+            receiverShortId,
+            amount: transferAmount
+        }).catch(() => {});
         showToast(toErrorMessage(e), 'error');
         return false;
     }
@@ -1057,15 +1861,17 @@ document.getElementById('confirm-pin-btn').addEventListener('click', async () =>
 // --- HISTÓRICO & FILTROS ---
 function listenToTransactions(uid) {
     if (unsubTransactions) unsubTransactions();
-    const q = query(collection(db, "transactions"), where("participants", "array-contains", uid), orderBy("timestamp", "desc"), limit(30));
+    const q = query(collection(db, "transactions"), where("participants", "array-contains", uid), orderBy("timestamp", "desc"), limit(50));
     unsubTransactions = onSnapshot(q, (snap) => {
         currentTransactions = [];
         snap.forEach(d => currentTransactions.push({ ...d.data(), id: d.id }));
-        renderHistory('all');
+        renderHistory(activeHistoryFilter);
+        renderNotifications();
     });
 }
 
 window.filterHistory = (filter, event) => {
+    activeHistoryFilter = filter;
     document.querySelectorAll('.filter-chips button').forEach(b => b.classList.remove('active-chip'));
     const targetBtn = event?.currentTarget || document.querySelector(`.filter-chips button[data-filter="${filter}"]`);
     if (targetBtn) targetBtn.classList.add('active-chip');
@@ -1076,6 +1882,7 @@ function renderHistory(filter) {
     const list = document.getElementById('transaction-list');
     if (!list || !currentUser) return;
     list.innerHTML = "";
+    let rendered = 0;
 
     currentTransactions.forEach(t => {
         const isSender = t.senderId === currentUser.uid;
@@ -1089,41 +1896,81 @@ function renderHistory(filter) {
         let color = isSender ? '#ff416c' : '#00f260';
         let signal = isSender ? '-' : '+';
 
-        if (t.type === 'interest_debt') { icon = 'fire'; color = '#e74c3c'; signal = '-'; }
+        if (t.type === 'interest_loan' || t.type === 'interest_overdraft') { icon = 'fire'; color = '#e74c3c'; signal = '-'; }
         if (t.type === 'interest_yield') { icon = 'leaf'; color = '#f1c40f'; signal = '+'; }
         if (t.type === 'welfare') { icon = 'gift'; color = '#3498db'; signal = '+'; }
         if (t.type === 'loan') { icon = 'hand-holding-usd'; color = '#f39c12'; signal = '+'; }
+        if (t.type === 'loan_payment') { icon = 'wallet'; color = '#ff9f43'; signal = '-'; }
 
         const title = t.type === 'transfer' ? (isSender ? t.receiverName : t.senderName) : (t.senderName || 'Sistema');
         const txType = String(t.type || 'transaction').toUpperCase();
+        const executedAt = timestampToDate(t.timestamp, new Date(0));
+
+        const main = document.createElement('div');
+        main.className = 'history-main';
 
         const left = document.createElement('div');
+        left.className = 'history-left';
         const iconEl = document.createElement('i');
         iconEl.className = `fas fa-${icon}`;
         iconEl.style.color = color;
         iconEl.style.marginRight = '10px';
 
+        const copy = document.createElement('div');
+        copy.className = 'history-copy';
         const strong = document.createElement('strong');
         strong.textContent = String(title || 'Sistema');
 
-        const br = document.createElement('br');
         const small = document.createElement('small');
-        small.style.opacity = '0.6';
         small.textContent = txType;
 
+        const meta = document.createElement('div');
+        meta.className = 'history-meta';
+
+        const dateMeta = document.createElement('span');
+        dateMeta.textContent = formatDateTime(executedAt);
+
+        const txMeta = document.createElement('span');
+        txMeta.textContent = t.txId || formatTransactionId(t.id);
+
+        meta.appendChild(dateMeta);
+        meta.appendChild(txMeta);
+
+        copy.appendChild(strong);
+        copy.appendChild(small);
+        copy.appendChild(meta);
+
+        if (hasTax) {
+            const taxLine = document.createElement('small');
+            taxLine.className = 'history-tax';
+            taxLine.textContent = `Imposto: ${formatMoney(t.tax || 0)}`;
+            copy.appendChild(taxLine);
+        }
+
         left.appendChild(iconEl);
-        left.appendChild(strong);
-        left.appendChild(br);
-        left.appendChild(small);
+        left.appendChild(copy);
 
         const right = document.createElement('div');
+        right.className = 'history-right';
         right.style.color = color;
         right.textContent = `${signal} ${formatMoney(t.amount || 0)}`;
 
-        li.appendChild(left);
-        li.appendChild(right);
+        const status = document.createElement('span');
+        status.className = `status-pill ${t.status === 'estornada' ? 'estornada' : 'concluida'}`;
+        status.textContent = formatStatus(t.status || 'concluida');
+
+        main.appendChild(left);
+        main.appendChild(right);
+        li.appendChild(main);
+        li.appendChild(status);
+        li.addEventListener('click', () => openTransactionDetails(t));
         list.appendChild(li);
+        rendered += 1;
     });
+
+    if (!rendered) {
+        renderEmptyState(list, 'Nenhuma transacao encontrada neste filtro.');
+    }
 }
 
 function initStaticListeners() {
