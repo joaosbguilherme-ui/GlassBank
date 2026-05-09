@@ -1,5 +1,5 @@
 ﻿import { initializeApp } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-app.js";
-import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-auth.js";
+import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, onAuthStateChanged, signOut, EmailAuthProvider, reauthenticateWithCredential, updatePassword } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-auth.js";
 import { getFirestore, doc, setDoc, updateDoc, collection, query, where, onSnapshot, runTransaction, serverTimestamp, orderBy, limit, getDocs, increment, addDoc, deleteField } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-firestore.js";
 
 // CONFIGURAÇÃO FIREBASE (MANTENHA A SUA)
@@ -36,6 +36,8 @@ let currentNotifications = [];
 let currentAdminTransactions = [];
 let currentAdminLogs = [];
 let currentRiskUsers = [];
+let currentPublicTaxHidden = false;
+let currentTotalTaxCollected = 0;
 let activeHistoryFilter = 'all';
 
 const CITY_HALL_ID = "vTFqk1ZX8NfwzuE4ZmJKXnfoI9r1";
@@ -49,6 +51,8 @@ const HIGH_NEGATIVE_ALERT = -1000;
 const MAX_CONTACTS = 15;
 const MAX_NOTIFICATION_READ_IDS = 200;
 const MAX_NOTIFICATION_ITEMS = 40;
+const PASSWORD_CHANGE_COOLDOWN_MINUTES = 30;
+const MAX_INVESTMENT_POLLS = 40;
 
 const toErrorMessage = (error) => {
     if (typeof error === 'string') return error;
@@ -59,7 +63,11 @@ const toErrorMessage = (error) => {
 const toNumber = (value) => Number.parseFloat(String(value).replace(',', '.'));
 const formatMoney = (value) => `R$ ${Number(value || 0).toFixed(2)}`;
 const timestampToDate = (timestamp, fallback = new Date(0)) => {
-    return timestamp && typeof timestamp.toDate === 'function' ? timestamp.toDate() : fallback;
+    if (timestamp && typeof timestamp.toDate === 'function') return timestamp.toDate();
+    if (timestamp instanceof Date) return timestamp;
+    const numeric = Number(timestamp);
+    if (Number.isFinite(numeric) && numeric > 0) return new Date(numeric);
+    return fallback;
 };
 const enc = new TextEncoder();
 const allowedRoles = new Set(['user', 'merchant']);
@@ -115,8 +123,12 @@ async function generateUniqueShortId(maxAttempts = 20) {
     throw new Error("Falha ao gerar ID curto unico. Tente novamente.");
 }
 
+function hasGovernmentAccess(userData = currentUser) {
+    return userData?.role === 'admin' || userData?.uid === CITY_HALL_ID;
+}
+
 function ensureAdmin() {
-    if (currentUser?.role !== 'admin') {
+    if (!hasGovernmentAccess()) {
         showToast("Acao restrita a prefeitura.", "error");
         return false;
     }
@@ -149,7 +161,10 @@ function formatDateTime(date) {
 }
 
 function timestampToMillis(timestamp, fallback = 0) {
-    return timestamp && typeof timestamp.toMillis === 'function' ? timestamp.toMillis() : fallback;
+    if (timestamp && typeof timestamp.toMillis === 'function') return timestamp.toMillis();
+    if (timestamp instanceof Date) return timestamp.getTime();
+    const numeric = Number(timestamp);
+    return Number.isFinite(numeric) && numeric > 0 ? numeric : fallback;
 }
 
 function formatStatus(status) {
@@ -172,6 +187,204 @@ function buildTransactionRecord(rawId, data) {
         status: data.status || 'concluida',
         timestamp: serverTimestamp()
     };
+}
+
+function getPasswordChangeLocalKey(uid = currentUser?.uid) {
+    return uid ? `glassbank:lastPasswordChangeAt:${uid}` : '';
+}
+
+function getPasswordLastChangedMs(userData = currentUser) {
+    const docMs = timestampToMillis(userData?.lastPasswordChangeAt, 0);
+    let localMs = 0;
+    const key = getPasswordChangeLocalKey(userData?.uid);
+    if (key) {
+        try {
+            localMs = Number(window.localStorage.getItem(key) || 0);
+        } catch (_) {
+            localMs = 0;
+        }
+    }
+    return Math.max(docMs, localMs);
+}
+
+function getPasswordCooldownRemainingMs(userData = currentUser) {
+    const lastChangedMs = getPasswordLastChangedMs(userData);
+    if (!lastChangedMs) return 0;
+    const cooldownMs = PASSWORD_CHANGE_COOLDOWN_MINUTES * 60 * 1000;
+    return Math.max(0, cooldownMs - (Date.now() - lastChangedMs));
+}
+
+function setLocalPasswordChangedAt(timestampMs = Date.now(), uid = currentUser?.uid) {
+    const key = getPasswordChangeLocalKey(uid);
+    if (!key) return;
+    try {
+        window.localStorage.setItem(key, String(timestampMs));
+    } catch (_) {
+        // Local fallback is optional.
+    }
+}
+
+function canReceiveWelfare(userData = currentUser) {
+    return userData?.welfareEligible !== false;
+}
+
+function getStoredInvestmentPolls(data) {
+    const rawPolls = Array.isArray(data?.investmentPolls) ? data.investmentPolls : [];
+    return rawPolls
+        .map((poll, index) => {
+            const createdAtMs = timestampToMillis(poll?.createdAt, Number(poll?.createdAtMs || 0));
+            const updatedAtMs = timestampToMillis(poll?.updatedAt, Number(poll?.updatedAtMs || createdAtMs || 0));
+            return {
+                id: String(poll?.id || `poll-${index + 1}`),
+                title: String(poll?.title || '').trim(),
+                cost: Number(poll?.cost || 0),
+                targetVotes: Math.max(1, Number.parseInt(poll?.targetVotes, 10) || 1),
+                votes: Math.max(0, Number.parseInt(poll?.votes, 10) || 0),
+                status: ['open', 'aguardando_verba', 'funded', 'estornada'].includes(poll?.status) ? poll.status : 'open',
+                voters: Array.isArray(poll?.voters) ? poll.voters.filter((voter) => typeof voter === 'string') : [],
+                createdAtMs,
+                updatedAtMs
+            };
+        })
+        .filter((poll) => poll.title)
+        .sort((a, b) => Number(b.createdAtMs || 0) - Number(a.createdAtMs || 0));
+}
+
+function makeInvestmentPollId(existingPolls = []) {
+    const taken = new Set(existingPolls.map((poll) => String(poll.id)));
+    let candidate = '';
+    do {
+        candidate = `POLL${randomHex(4).slice(0, 8).toUpperCase()}`;
+    } while (taken.has(candidate));
+    return candidate;
+}
+
+function renderInvestmentPolls(polls) {
+    const list = document.getElementById('polls-list');
+    if (!list) return;
+    list.innerHTML = "";
+
+    const visiblePolls = polls
+        .filter((poll) => ['open', 'aguardando_verba', 'funded'].includes(poll.status || 'open'))
+        .sort((a, b) => Number(b.createdAtMs || 0) - Number(a.createdAtMs || 0));
+
+    if (!visiblePolls.length) {
+        renderEmptyState(list, 'Nenhuma enquete ativa no momento.');
+        return;
+    }
+
+    visiblePolls.forEach((p) => {
+        const votes = Number(p.votes || 0);
+        const targetVotes = Math.max(1, Number(p.targetVotes || 1));
+        const cost = Number(p.cost || 0);
+        const percent = Math.min(100, (votes / targetVotes) * 100);
+        const pollStatus = p.status || 'open';
+
+        const div = document.createElement('div');
+        div.className = 'poll-card';
+
+        const rowTop = document.createElement('div');
+        rowTop.style.display = 'flex';
+        rowTop.style.justifyContent = 'space-between';
+
+        const titleStrong = document.createElement('strong');
+        titleStrong.textContent = p.title || 'Sem titulo';
+
+        const costSpan = document.createElement('span');
+        costSpan.textContent = formatMoney(cost);
+
+        rowTop.appendChild(titleStrong);
+        rowTop.appendChild(costSpan);
+
+        const progress = document.createElement('div');
+        progress.className = 'poll-progress';
+        const bar = document.createElement('div');
+        bar.className = 'poll-bar';
+        bar.style.width = `${percent}%`;
+        progress.appendChild(bar);
+
+        const rowBottom = document.createElement('div');
+        rowBottom.style.display = 'flex';
+        rowBottom.style.justifyContent = 'space-between';
+        rowBottom.style.alignItems = 'center';
+
+        const votesSmall = document.createElement('small');
+        votesSmall.textContent = `${votes} / ${targetVotes} votos`;
+
+        const statusSmall = document.createElement('small');
+        statusSmall.textContent = pollStatus === 'funded'
+            ? 'Projeto financiado'
+            : pollStatus === 'aguardando_verba'
+                ? 'Meta atingida, aguardando verba'
+                : 'Aberta para votos';
+
+        const voteBtn = document.createElement('button');
+        voteBtn.textContent = pollStatus === 'open' ? 'Votar' : 'Acompanhar';
+        voteBtn.style.width = 'auto';
+        voteBtn.style.padding = '5px 15px';
+        voteBtn.style.margin = '0';
+        voteBtn.disabled = pollStatus !== 'open';
+        voteBtn.addEventListener('click', () => window.votePoll(p.id));
+
+        const copyWrap = document.createElement('div');
+        copyWrap.style.display = 'flex';
+        copyWrap.style.flexDirection = 'column';
+        copyWrap.appendChild(votesSmall);
+        copyWrap.appendChild(statusSmall);
+
+        rowBottom.appendChild(copyWrap);
+        rowBottom.appendChild(voteBtn);
+
+        div.appendChild(rowTop);
+        div.appendChild(progress);
+        div.appendChild(rowBottom);
+        list.appendChild(div);
+    });
+}
+
+function renderTaxVisibility(totalTaxCollected = 0, hidePublicTaxTotal = false) {
+    currentPublicTaxHidden = Boolean(hidePublicTaxTotal);
+    const totalEl = document.getElementById('total-tax-collected');
+    const noteEl = document.getElementById('total-tax-visibility-note');
+    const statusEl = document.getElementById('tax-visibility-status');
+    const toggleBtn = document.getElementById('toggle-tax-visibility-btn');
+    const viewerIsGovernment = hasGovernmentAccess();
+
+    if (totalEl) {
+        totalEl.innerText = currentPublicTaxHidden && !viewerIsGovernment ? 'Oculto' : formatMoney(totalTaxCollected);
+    }
+
+    if (noteEl) {
+        noteEl.classList.remove('hidden');
+        noteEl.innerText = currentPublicTaxHidden
+            ? (viewerIsGovernment ? 'Total oculto do publico. A prefeitura ainda ve o valor real.' : 'Total oculto pela prefeitura neste momento.')
+            : 'Total visivel para todos.';
+    }
+
+    if (statusEl) {
+        statusEl.innerText = currentPublicTaxHidden
+            ? 'Total publico oculto. Apenas a prefeitura visualiza o numero real.'
+            : 'Total visivel para todos no portal.';
+    }
+
+    if (toggleBtn) {
+        toggleBtn.innerText = currentPublicTaxHidden ? 'Mostrar total publico' : 'Ocultar total publico';
+    }
+}
+
+function renderPasswordSecurity() {
+    const statusEl = document.getElementById('password-cooldown-status');
+    const button = document.getElementById('change-password-btn');
+    if (!statusEl || !button) return;
+
+    const remainingMs = getPasswordCooldownRemainingMs(currentUser);
+    if (remainingMs > 0) {
+        button.disabled = true;
+        statusEl.innerText = `Nova troca liberada em ${Math.ceil(remainingMs / (60 * 1000))} min.`;
+    } else {
+        button.disabled = false;
+        statusEl.innerText = 'Voce pode alterar sua senha agora.';
+    }
 }
 
 function getUserContacts() {
@@ -234,6 +447,12 @@ async function ensureUserDefaults(uid, data) {
     if (!('loanWindowStartedAt' in data)) patch.loanWindowStartedAt = null;
     if (!('lastLoanAt' in data)) patch.lastLoanAt = null;
     if (!('lastLoanRepaymentAt' in data)) patch.lastLoanRepaymentAt = null;
+    if (!('lastPasswordChangeAt' in data)) patch.lastPasswordChangeAt = null;
+    if (!('welfareEligible' in data)) patch.welfareEligible = true;
+    if (uid === CITY_HALL_ID) {
+        if (!('hidePublicTaxTotal' in data)) patch.hidePublicTaxTotal = false;
+        if (!Array.isArray(data.investmentPolls)) patch.investmentPolls = [];
+    }
     if (Object.keys(patch).length) {
         await updateDoc(doc(db, "users", uid), patch);
     }
@@ -258,6 +477,8 @@ function cleanupListeners() {
     currentAdminLogs = [];
     currentRiskUsers = [];
     currentNotifications = [];
+    currentPublicTaxHidden = false;
+    currentTotalTaxCollected = 0;
 }
 
 // --- SONS & UI ---
@@ -351,11 +572,13 @@ authForm.addEventListener('submit', async (e) => {
                 contacts: [],
                 readNotificationIds: [],
                 lastDailyClaim: null,
+                lastPasswordChangeAt: null,
                 loanOutstanding: 0,
                 borrowedThisWindow: 0,
                 loanWindowStartedAt: null,
                 lastLoanAt: null,
                 lastLoanRepaymentAt: null,
+                welfareEligible: true,
                 status: 'active',
                 lastInterestDate: serverTimestamp(),
                 lastDebtInterestDate: serverTimestamp(),
@@ -423,8 +646,9 @@ function initializeUser(uid) {
         renderLoanPanel();
         renderContactLists();
         renderNotifications();
+        renderPasswordSecurity();
 
-        if (currentUser.role === 'admin') {
+        if (hasGovernmentAccess()) {
             document.getElementById('admin-btn').classList.remove('hidden');
             initAdminPanel();
             initAdminMonitor();
@@ -551,113 +775,30 @@ async function processInterests(uid) {
 function syncSystemData() {
     if (unsubCity) unsubCity();
     if (unsubPolls) unsubPolls();
+    unsubPolls = null;
 
     unsubCity = onSnapshot(doc(db, "users", CITY_HALL_ID), (snap) => {
         if (!snap.exists()) return;
         const data = snap.data();
         currentTaxRate = Number(data.customTax || 0.02);
         dailyRewardValue = Number(data.dailyRewardAmount || 50);
+        currentTotalTaxCollected = Number(data.totalTaxCollected || 0);
 
         document.getElementById('city-hall-balance').innerText = formatMoney(data.balance || 0);
-        document.getElementById('total-tax-collected').innerText = formatMoney(data.totalTaxCollected || 0);
+        renderTaxVisibility(currentTotalTaxCollected, Boolean(data.hidePublicTaxTotal));
         document.getElementById('tax-display').innerText = `${(currentTaxRate * 100).toFixed(1)}%`;
         updateTransferPreview();
+        renderInvestmentPolls(getStoredInvestmentPolls(data));
+        checkDailyRewardStatus();
 
-        if (currentUser?.role === 'admin') {
+        if (hasGovernmentAccess()) {
             updateSliderUI(currentTaxRate * 100);
             const rewardInput = document.getElementById('admin-daily-reward');
             if (rewardInput && document.activeElement !== rewardInput) {
                 rewardInput.value = dailyRewardValue.toFixed(2);
             }
+            initAdminPanel();
         }
-    });
-
-    unsubPolls = onSnapshot(collection(db, "polls"), (snap) => {
-        const list = document.getElementById('polls-list');
-        if (!list) return;
-        list.innerHTML = "";
-
-        const polls = [];
-        snap.forEach(docSnap => {
-            polls.push({ id: docSnap.id, ...docSnap.data() });
-        });
-
-        const visiblePolls = polls
-            .filter((poll) => ['open', 'aguardando_verba', 'funded'].includes(poll.status || 'open'))
-            .sort((a, b) => timestampToMillis(b.createdAt, 0) - timestampToMillis(a.createdAt, 0));
-
-        if (!visiblePolls.length) {
-            renderEmptyState(list, 'Nenhuma enquete ativa no momento.');
-            return;
-        }
-
-        visiblePolls.forEach((p) => {
-            const votes = Number(p.votes || 0);
-            const targetVotes = Math.max(1, Number(p.targetVotes || 1));
-            const cost = Number(p.cost || 0);
-            const percent = Math.min(100, (votes / targetVotes) * 100);
-            const pollStatus = p.status || 'open';
-
-            const div = document.createElement('div');
-            div.className = 'poll-card';
-
-            const rowTop = document.createElement('div');
-            rowTop.style.display = 'flex';
-            rowTop.style.justifyContent = 'space-between';
-
-            const titleStrong = document.createElement('strong');
-            titleStrong.textContent = p.title || 'Sem titulo';
-
-            const costSpan = document.createElement('span');
-            costSpan.textContent = formatMoney(cost);
-
-            rowTop.appendChild(titleStrong);
-            rowTop.appendChild(costSpan);
-
-            const progress = document.createElement('div');
-            progress.className = 'poll-progress';
-            const bar = document.createElement('div');
-            bar.className = 'poll-bar';
-            bar.style.width = `${percent}%`;
-            progress.appendChild(bar);
-
-            const rowBottom = document.createElement('div');
-            rowBottom.style.display = 'flex';
-            rowBottom.style.justifyContent = 'space-between';
-            rowBottom.style.alignItems = 'center';
-
-            const votesSmall = document.createElement('small');
-            votesSmall.textContent = `${votes} / ${targetVotes} votos`;
-
-            const statusSmall = document.createElement('small');
-            statusSmall.textContent = pollStatus === 'funded'
-                ? 'Projeto financiado'
-                : pollStatus === 'aguardando_verba'
-                    ? 'Meta atingida, aguardando verba'
-                    : 'Aberta para votos';
-
-            const voteBtn = document.createElement('button');
-            voteBtn.textContent = pollStatus === 'open' ? 'Votar' : 'Acompanhar';
-            voteBtn.style.width = 'auto';
-            voteBtn.style.padding = '5px 15px';
-            voteBtn.style.margin = '0';
-            voteBtn.disabled = pollStatus !== 'open';
-            voteBtn.addEventListener('click', () => window.votePoll(p.id));
-
-            const copyWrap = document.createElement('div');
-            copyWrap.style.display = 'flex';
-            copyWrap.style.flexDirection = 'column';
-            copyWrap.appendChild(votesSmall);
-            copyWrap.appendChild(statusSmall);
-
-            rowBottom.appendChild(copyWrap);
-            rowBottom.appendChild(voteBtn);
-
-            div.appendChild(rowTop);
-            div.appendChild(progress);
-            div.appendChild(rowBottom);
-            list.appendChild(div);
-        });
     });
 }
 
@@ -758,15 +899,28 @@ window.tradeStock = async (action) => {
 function checkDailyRewardStatus() {
     if (!currentUser) return;
     const area = document.getElementById('daily-reward-area');
-    if (!area) return;
+    const button = document.getElementById('claim-reward-btn');
+    const statusEl = document.getElementById('daily-reward-status');
+    if (!area || !button || !statusEl) return;
     const now = new Date();
     const last = timestampToDate(currentUser.lastDailyClaim, new Date(0));
     const diffHours = (now - last) / (1000 * 60 * 60);
+    const rewardReady = diffHours >= 24;
+    const eligible = canReceiveWelfare(currentUser);
 
-    if (diffHours >= 24) {
-        area.classList.remove('hidden');
+    area.classList.remove('hidden');
+    if (!eligible) {
+        button.disabled = true;
+        button.innerText = 'Bloqueado';
+        statusEl.innerText = 'Auxilio bloqueado para esta conta pela prefeitura.';
+    } else if (rewardReady) {
+        button.disabled = false;
+        button.innerText = 'Resgatar';
+        statusEl.innerText = `Disponivel agora: ${formatMoney(dailyRewardValue)}.`;
     } else {
-        area.classList.add('hidden');
+        button.disabled = true;
+        button.innerText = 'Aguardar';
+        statusEl.innerText = `Novo resgate liberado em ${Math.ceil(24 - diffHours)}h.`;
     }
 }
 
@@ -781,6 +935,7 @@ window.claimDailyReward = async () => {
             const userDoc = await t.get(userRef);
             if (!cityDoc.exists()) throw new Error("Prefeitura não encontrada.");
             if (!userDoc.exists()) throw new Error("Usuário não encontrado.");
+            if (userDoc.data().welfareEligible === false) throw new Error("Esta conta nao pode receber auxilio no momento.");
 
             const lastClaim = timestampToDate(userDoc.data().lastDailyClaim, new Date(0));
             const diffHours = (Date.now() - lastClaim.getTime()) / (1000 * 60 * 60);
@@ -808,7 +963,7 @@ window.claimDailyReward = async () => {
             }));
         });
         showToast(`Recebeu ${formatMoney(dailyRewardValue)}!`);
-        document.getElementById('daily-reward-area').classList.add('hidden');
+        checkDailyRewardStatus();
     } catch(e) {
         logSystemFailure('claimDailyReward', e, { userId: currentUser?.uid }).catch(() => {});
         showToast(toErrorMessage(e), 'error');
@@ -1185,7 +1340,7 @@ function renderAdminMonitor() {
 }
 
 function initAdminMonitor() {
-    if (currentUser?.role !== 'admin') return;
+    if (!hasGovernmentAccess()) return;
     if (!unsubAdminTransactions) {
         const q = query(collection(db, "transactions"), orderBy("timestamp", "desc"), limit(50));
         unsubAdminTransactions = onSnapshot(q, (snap) => {
@@ -1303,12 +1458,13 @@ function updateSliderUI(val) {
 }
 
 function initAdminPanel() {
-    if (currentUser?.role !== 'admin') return;
+    if (!hasGovernmentAccess()) return;
     updateSliderUI(currentTaxRate * 100);
     const rewardInput = document.getElementById('admin-daily-reward');
     if (rewardInput && document.activeElement !== rewardInput) {
         rewardInput.value = dailyRewardValue.toFixed(2);
     }
+    renderTaxVisibility(currentTotalTaxCollected, currentPublicTaxHidden);
 }
 
 window.updateGlobalTax = async () => {
@@ -1348,6 +1504,126 @@ window.updateDailyReward = async () => {
     }
 };
 
+window.togglePublicTaxVisibility = async () => {
+    if (!ensureAdmin()) return;
+
+    try {
+        await updateDoc(doc(db, "users", CITY_HALL_ID), {
+            hidePublicTaxTotal: !currentPublicTaxHidden
+        });
+        showToast(currentPublicTaxHidden ? "Total publico visivel novamente." : "Total publico ocultado.");
+    } catch (error) {
+        logSystemFailure('togglePublicTaxVisibility', error, { userId: currentUser?.uid }).catch(() => {});
+        showToast(toErrorMessage(error), 'error');
+    }
+};
+
+window.updateWelfareEligibility = async () => {
+    if (!ensureAdmin()) return;
+    const shortIdInput = document.getElementById('welfare-target-id');
+    const stateInput = document.getElementById('welfare-target-state');
+    const statusEl = document.getElementById('welfare-admin-status');
+    if (!shortIdInput || !stateInput || !statusEl) return;
+
+    const shortId = shortIdInput.value.trim().toUpperCase();
+    const nextEligibility = stateInput.value === 'allow';
+    if (!/^[A-Z0-9]{6}$/.test(shortId)) {
+        showToast('Informe um ID curto valido.', 'error');
+        return;
+    }
+
+    try {
+        const matches = await getDocs(query(collection(db, "users"), where("shortId", "==", shortId), limit(2)));
+        if (matches.empty) throw new Error("Conta nao encontrada.");
+        if (matches.size > 1) throw new Error("ID duplicado. Corrija antes de aplicar a regra.");
+
+        const targetDoc = matches.docs[0];
+        const targetData = targetDoc.data();
+        await updateDoc(targetDoc.ref, {
+            welfareEligible: nextEligibility,
+            welfareStatusUpdatedAt: serverTimestamp(),
+            welfareStatusUpdatedBy: currentUser?.uid || 'SYSTEM'
+        });
+
+        shortIdInput.value = '';
+        statusEl.innerText = `${targetData.name || 'Conta'} (${shortId}) agora esta ${nextEligibility ? 'liberado para' : 'bloqueado de'} receber auxilio.`;
+        showToast(`Auxilio ${nextEligibility ? 'liberado' : 'bloqueado'} para ${targetData.name || shortId}.`);
+    } catch (error) {
+        logSystemFailure('updateWelfareEligibility', error, { userId: currentUser?.uid, targetShortId: shortId }).catch(() => {});
+        showToast(toErrorMessage(error), 'error');
+    }
+};
+
+window.changeAccountPassword = async () => {
+    if (!currentUser || !auth.currentUser) return;
+
+    const currentPasswordInput = document.getElementById('current-password');
+    const newPasswordInput = document.getElementById('new-password');
+    const confirmPasswordInput = document.getElementById('confirm-new-password');
+    const button = document.getElementById('change-password-btn');
+    if (!currentPasswordInput || !newPasswordInput || !confirmPasswordInput || !button) return;
+
+    const currentPassword = currentPasswordInput.value;
+    const newPassword = newPasswordInput.value;
+    const confirmPassword = confirmPasswordInput.value;
+    const remainingMs = getPasswordCooldownRemainingMs(currentUser);
+
+    if (remainingMs > 0) {
+        showToast(`Aguarde ${Math.ceil(remainingMs / (60 * 1000))} min para trocar a senha novamente.`, 'error');
+        renderPasswordSecurity();
+        return;
+    }
+    if (!currentPassword || !newPassword || !confirmPassword) {
+        showToast('Preencha senha atual, nova senha e confirmacao.', 'error');
+        return;
+    }
+    if (newPassword.length < 6) {
+        showToast('A nova senha precisa ter pelo menos 6 caracteres.', 'error');
+        return;
+    }
+    if (newPassword !== confirmPassword) {
+        showToast('A confirmacao da nova senha nao confere.', 'error');
+        return;
+    }
+    if (!currentUser.email) {
+        showToast('Nao foi possivel validar o e-mail desta conta.', 'error');
+        return;
+    }
+
+    button.disabled = true;
+    try {
+        const credential = EmailAuthProvider.credential(currentUser.email, currentPassword);
+        await reauthenticateWithCredential(auth.currentUser, credential);
+        await updatePassword(auth.currentUser, newPassword);
+
+        try {
+            await updateDoc(doc(db, "users", currentUser.uid), { lastPasswordChangeAt: serverTimestamp() });
+        } catch (cooldownError) {
+            setLocalPasswordChangedAt();
+            logSystemFailure('changeAccountPassword:cooldown', cooldownError, { userId: currentUser?.uid }).catch(() => {});
+            currentPasswordInput.value = '';
+            newPasswordInput.value = '';
+            confirmPasswordInput.value = '';
+            renderPasswordSecurity();
+            showToast('Senha alterada. O cooldown ficou salvo apenas neste dispositivo.', 'error');
+            return;
+        }
+
+        setLocalPasswordChangedAt();
+
+        currentPasswordInput.value = '';
+        newPasswordInput.value = '';
+        confirmPasswordInput.value = '';
+        renderPasswordSecurity();
+        showToast('Senha atualizada com sucesso.');
+    } catch (error) {
+        logSystemFailure('changeAccountPassword', error, { userId: currentUser?.uid }).catch(() => {});
+        showToast(toErrorMessage(error), 'error');
+    } finally {
+        renderPasswordSecurity();
+    }
+};
+
 window.createPoll = async () => {
     if (!ensureAdmin()) return;
     const title = document.getElementById('poll-title').value.trim();
@@ -1368,15 +1644,28 @@ window.createPoll = async () => {
     }
 
     try {
-        await addDoc(collection(db, "polls"), {
-            title,
-            cost,
-            targetVotes: target,
-            votes: 0,
-            status: 'open',
-            voters: [],
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp()
+        await runTransaction(db, async (t) => {
+            const cityRef = doc(db, "users", CITY_HALL_ID);
+            const cityDoc = await t.get(cityRef);
+            if (!cityDoc.exists()) throw new Error("Prefeitura nao encontrada.");
+
+            const existingPolls = getStoredInvestmentPolls(cityDoc.data());
+            const nowMs = Date.now();
+            const nextPoll = {
+                id: makeInvestmentPollId(existingPolls),
+                title,
+                cost,
+                targetVotes: target,
+                votes: 0,
+                status: 'open',
+                voters: [],
+                createdAtMs: nowMs,
+                updatedAtMs: nowMs
+            };
+
+            t.update(cityRef, {
+                investmentPolls: [nextPoll, ...existingPolls].slice(0, MAX_INVESTMENT_POLLS)
+            });
         });
         document.getElementById('poll-title').value = "";
         document.getElementById('poll-cost').value = "";
@@ -1391,28 +1680,30 @@ window.createPoll = async () => {
 window.votePoll = async (pollId) => {
     if (!currentUser) return;
 
-    const pollRef = doc(db, "polls", pollId);
+    const cityRef = doc(db, "users", CITY_HALL_ID);
     try {
         let voteMessage = "Voto computado!";
         await runTransaction(db, async (t) => {
-            const pDoc = await t.get(pollRef);
-            if (!pDoc.exists()) throw new Error("Enquete não encontrada.");
+            const cityDoc = await t.get(cityRef);
+            if (!cityDoc.exists()) throw new Error("Prefeitura nao encontrada.");
 
-            const pollData = pDoc.data();
+            const cityData = cityDoc.data();
+            const polls = getStoredInvestmentPolls(cityData);
+            const pollIndex = polls.findIndex((poll) => poll.id === pollId);
+            if (pollIndex < 0) throw new Error("Enquete nao encontrada.");
+
+            const pollData = polls[pollIndex];
             if ((pollData.status || 'open') !== 'open') throw new Error("Esta enquete nao aceita mais votos.");
             const voters = Array.isArray(pollData.voters) ? pollData.voters : [];
-            if (voters.includes(currentUser.uid)) throw new Error("Você já votou!");
-
-            const cityRef = doc(db, "users", CITY_HALL_ID);
-            const cityDoc = await t.get(cityRef);
+            if (voters.includes(currentUser.uid)) throw new Error("Voce ja votou!");
 
             const newVotes = Number(pollData.votes || 0) + 1;
             const newVoters = [...voters, currentUser.uid];
             let newStatus = 'open';
+            const nextPolls = [...polls];
 
             if (newVotes >= Number(pollData.targetVotes || 0) && cityDoc.exists()) {
-                if (Number(cityDoc.data().balance || 0) >= Number(pollData.cost || 0)) {
-                    t.update(cityRef, { balance: increment(-Number(pollData.cost || 0)) });
+                if (Number(cityData.balance || 0) >= Number(pollData.cost || 0)) {
                     newStatus = 'funded';
                     voteMessage = "Meta atingida. Projeto financiado!";
                     const txRef = doc(collection(db, "transactions"));
@@ -1434,12 +1725,22 @@ window.votePoll = async (pollId) => {
                 }
             }
 
-            t.update(pollRef, {
+            nextPolls[pollIndex] = {
+                ...pollData,
                 votes: newVotes,
                 voters: newVoters,
                 status: newStatus,
-                updatedAt: serverTimestamp()
-            });
+                updatedAtMs: Date.now()
+            };
+
+            const cityUpdate = {
+                investmentPolls: nextPolls
+            };
+            if (newStatus === 'funded') {
+                cityUpdate.balance = Number(cityData.balance || 0) - Number(pollData.cost || 0);
+            }
+
+            t.update(cityRef, cityUpdate);
         });
         showToast(voteMessage);
     } catch (e) {
@@ -1997,6 +2298,14 @@ function initStaticListeners() {
         pinInput.dataset.bound = '1';
         pinInput.addEventListener('input', () => {
             pinInput.value = pinInput.value.replace(/\D/g, '').slice(0, 4);
+        });
+    }
+
+    const welfareTargetInput = document.getElementById('welfare-target-id');
+    if (welfareTargetInput && !welfareTargetInput.dataset.bound) {
+        welfareTargetInput.dataset.bound = '1';
+        welfareTargetInput.addEventListener('input', () => {
+            welfareTargetInput.value = welfareTargetInput.value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 6);
         });
     }
 }

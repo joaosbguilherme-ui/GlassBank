@@ -112,10 +112,13 @@
                 </div>
             </div>
 
-            <div id="daily-reward-area" class="glass-card compact hidden">
-                <div class="row">
-                    <span>Auxilio Cidadao</span>
-                    <button id="claim-reward-btn" onclick="claimDailyReward()">Resgatar</button>
+            <div id="daily-reward-area" class="glass-card hidden">
+                <div class="section-head">
+                    <div>
+                        <h3>Auxilio Cidadao</h3>
+                        <p id="daily-reward-status" class="section-copy">Disponivel a cada 24h.</p>
+                    </div>
+                    <button id="claim-reward-btn" class="small-btn" onclick="claimDailyReward()">Resgatar</button>
                 </div>
             </div>
 
@@ -129,6 +132,19 @@
             </div>
 
             <button id="admin-btn" class="hidden wide-btn" onclick="navTo('admin-panel')"><i class="fas fa-shield-alt"></i> Painel Prefeitura</button>
+
+            <div class="glass-card">
+                <div class="section-head">
+                    <div>
+                        <h3>Seguranca da Conta</h3>
+                        <p id="password-cooldown-status" class="section-copy">Voce pode alterar sua senha agora.</p>
+                    </div>
+                </div>
+                <input type="password" id="current-password" placeholder="Senha atual">
+                <input type="password" id="new-password" placeholder="Nova senha (min. 6 caracteres)">
+                <input type="password" id="confirm-new-password" placeholder="Confirmar nova senha">
+                <button id="change-password-btn" class="secondary" onclick="changeAccountPassword()">Trocar senha</button>
+            </div>
 
             <div class="history-preview">
                 <div class="section-head">
@@ -195,6 +211,7 @@
             <div class="glass-card transparent-header">
                 <p>Total Arrecadado (Impostos)</p>
                 <h1 id="total-tax-collected">R$ 0,00</h1>
+                <small id="total-tax-visibility-note" class="section-copy hidden">Total visivel para todos.</small>
                 <div class="progress-bar-container">
                     <div class="progress-fill" style="width: 100%"></div>
                 </div>
@@ -239,6 +256,24 @@
                     <input type="number" id="poll-cost" placeholder="Custo (R$)">
                     <input type="number" id="poll-target" placeholder="Meta de Votos">
                     <button onclick="createPoll()">Publicar Enquete</button>
+                    <p class="section-copy">As enquetes ficam registradas no cofre da prefeitura para evitar o bloqueio de permissao da colecao antiga.</p>
+                </div>
+
+                <div class="tool-item">
+                    <label>Visibilidade da Arrecadacao</label>
+                    <p id="tax-visibility-status" class="section-copy">Total visivel para todos no portal.</p>
+                    <button id="toggle-tax-visibility-btn" class="secondary" onclick="togglePublicTaxVisibility()">Ocultar total publico</button>
+                </div>
+
+                <div class="tool-item">
+                    <label>Controle de Auxilio</label>
+                    <input type="text" id="welfare-target-id" placeholder="ID da conta (Ex: 12A34B)" maxlength="6" style="text-transform: uppercase;">
+                    <select id="welfare-target-state">
+                        <option value="allow">Liberar auxilio</option>
+                        <option value="block">Bloquear auxilio</option>
+                    </select>
+                    <button onclick="updateWelfareEligibility()">Aplicar regra</button>
+                    <p id="welfare-admin-status" class="section-copy">Informe o ID curto para liberar ou bloquear o beneficio.</p>
                 </div>
 
                 <div class="tool-item">

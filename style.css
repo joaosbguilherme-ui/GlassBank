@@ -44,6 +44,7 @@ input, select { background: rgba(0,0,0,0.3); color: white; border: 1px solid tra
 input:focus { border-color: var(--accent); background: rgba(0,0,0,0.5); }
 button { background: linear-gradient(90deg, var(--primary), var(--secondary)); color: white; font-weight: 600; cursor: pointer; }
 button:active { transform: scale(0.97); }
+button:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
 button.secondary { background: rgba(255,255,255,0.15); }
 button.danger-btn { background: var(--danger); }
 .icon-only { width: 40px; height: 40px; padding: 0; display: flex; align-items: center; justify-content: center; border-radius: 50%; }
@@ -161,6 +162,7 @@ input[type=range]::-webkit-slider-runnable-track { width: 100%; height: 4px; bac
 .transparent-header { margin-bottom: 8px; }
 .progress-bar-container { height: 8px; background: rgba(0,0,0,0.25); border-radius: 999px; overflow: hidden; margin-top: 10px; }
 .progress-fill { height: 100%; background: linear-gradient(90deg, var(--accent), #7bffb6); }
+#total-tax-visibility-note { display: block; text-align: center; margin-top: 6px; }
 .admin-card { margin-bottom: 10px; }
 .admin-tools { display: flex; flex-direction: column; gap: 10px; }
 .tool-item { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.12); border-radius: 14px; padding: 12px; }
