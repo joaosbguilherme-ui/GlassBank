@@ -333,7 +333,21 @@ function renderInvestmentPolls(polls) {
         copyWrap.appendChild(statusSmall);
 
         rowBottom.appendChild(copyWrap);
-        rowBottom.appendChild(voteBtn);
+
+        const btnsWrap = document.createElement('div');
+        btnsWrap.style.cssText = 'display:flex; gap:6px; align-items:center;';
+        btnsWrap.appendChild(voteBtn);
+
+        if (hasGovernmentAccess()) {
+            const deleteBtn = document.createElement('button');
+            deleteBtn.innerHTML = '<i class="fas fa-trash"></i>';
+            deleteBtn.title = 'Remover enquete';
+            deleteBtn.style.cssText = 'width:auto; padding:5px 10px; margin:0; background:rgba(255,77,106,0.15); color:#ff6b85; border:1px solid rgba(255,77,106,0.3); border-radius:8px; cursor:pointer;';
+            deleteBtn.addEventListener('click', () => window.deletePoll(p.id));
+            btnsWrap.appendChild(deleteBtn);
+        }
+
+        rowBottom.appendChild(btnsWrap);
 
         div.appendChild(rowTop);
         div.appendChild(progress);
@@ -383,7 +397,7 @@ function renderPasswordSecurity() {
         statusEl.innerText = `Nova troca liberada em ${Math.ceil(remainingMs / (60 * 1000))} min.`;
     } else {
         button.disabled = false;
-        statusEl.innerText = 'Voce pode alterar sua senha agora.';
+        statusEl.innerText = 'Você pode alterar sua senha agora.';
     }
 }
 
@@ -494,7 +508,20 @@ const showToast = (msg, type = 'success') => {
     if (!container) return;
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
-    toast.style.cssText = `background: ${type==='error'?'#ff416c':'#00f260'}; color:${type==='error'?'white':'black'}; padding:15px; margin-bottom:10px; border-radius:10px; box-shadow:0 5px 15px rgba(0,0,0,0.3); animation: slideUp 0.3s;`;
+    toast.style.cssText = `
+        background: ${type === 'error' ? 'rgba(255,77,106,0.12)' : 'rgba(0,232,124,0.10)'};
+        color: ${type === 'error' ? '#ff6b85' : '#00e87c'};
+        border: 1px solid ${type === 'error' ? 'rgba(255,77,106,0.35)' : 'rgba(0,232,124,0.35)'};
+        padding: 13px 16px;
+        margin-bottom: 8px;
+        border-radius: 12px;
+        box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+        font-family: 'Figtree', sans-serif;
+        font-size: 0.88rem;
+        font-weight: 500;
+        backdrop-filter: blur(12px);
+        line-height: 1.4;
+    `;
     toast.innerText = toErrorMessage(msg);
     container.appendChild(toast);
     setTimeout(() => toast.remove(), 4000);
@@ -556,7 +583,7 @@ authForm.addEventListener('submit', async (e) => {
             const role = document.getElementById('role-select').value;
             const pin = document.getElementById('reg-pin').value.trim();
             if (!name) throw new Error("Informe seu nome completo.");
-            if (!/^\d{4}$/.test(pin)) throw new Error("PIN deve ter 4 números.");
+            if (!/^\d{4,6}$/.test(pin)) throw new Error("PIN deve ter entre 4 e 6 dígitos.");
             if (!allowedRoles.has(role)) throw new Error("Tipo de conta inválido.");
 
             const userCred = await createUserWithEmailAndPassword(auth, email, password);
@@ -973,7 +1000,7 @@ window.claimDailyReward = async () => {
 function renderEmptyState(container, message) {
     if (!container) return;
     const item = document.createElement('div');
-    item.className = 'monitor-item';
+    item.className = 'empty-state';
     item.innerText = message;
     container.appendChild(item);
 }
@@ -1554,6 +1581,30 @@ window.updateWelfareEligibility = async () => {
     }
 };
 
+window.changeAccountName = async () => {
+    if (!currentUser) return;
+    const input = document.getElementById('settings-new-name');
+    if (!input) return;
+    const newName = input.value.trim();
+    if (!newName || newName.length < 2) {
+        showToast('Nome deve ter pelo menos 2 caracteres.', 'error');
+        return;
+    }
+    if (newName.length > 40) {
+        showToast('Nome muito longo (máximo 40 caracteres).', 'error');
+        return;
+    }
+    try {
+        await updateDoc(doc(db, "users", currentUser.uid), { name: newName });
+        input.value = '';
+        showToast('Nome atualizado com sucesso!');
+        closeModal('settings-modal');
+    } catch (e) {
+        logSystemFailure('changeAccountName', e, { userId: currentUser?.uid }).catch(() => {});
+        showToast(toErrorMessage(e), 'error');
+    }
+};
+
 window.changeAccountPassword = async () => {
     if (!currentUser || !auth.currentUser) return;
 
@@ -1746,6 +1797,26 @@ window.votePoll = async (pollId) => {
     } catch (e) {
         logSystemFailure('votePoll', e, { userId: currentUser?.uid, pollId }).catch(() => {});
         showToast(toErrorMessage(e), "error");
+    }
+};
+
+window.deletePoll = async (pollId) => {
+    if (!hasGovernmentAccess()) { showToast('Ação restrita à prefeitura.', 'error'); return; }
+    if (!confirm('Remover esta enquete? Esta ação não pode ser desfeita.')) return;
+    const cityRef = doc(db, "users", CITY_HALL_ID);
+    try {
+        await runTransaction(db, async (t) => {
+            const cityDoc = await t.get(cityRef);
+            if (!cityDoc.exists()) throw new Error("Prefeitura não encontrada.");
+            const polls = getStoredInvestmentPolls(cityDoc.data());
+            const next = polls.filter((p) => p.id !== pollId);
+            if (next.length === polls.length) throw new Error("Enquete não encontrada.");
+            t.update(cityRef, { investmentPolls: next });
+        });
+        showToast('Enquete removida.');
+    } catch (e) {
+        logSystemFailure('deletePoll', e, { userId: currentUser?.uid, pollId }).catch(() => {});
+        showToast(toErrorMessage(e), 'error');
     }
 };
 
@@ -2132,16 +2203,31 @@ async function transferLogic(shortId, amount) {
     }
 }
 
-document.getElementById('transfer-form').addEventListener('submit', (e) => {
+document.getElementById('transfer-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const id = document.getElementById('dest-id').value.toUpperCase().trim();
     const amt = toNumber(document.getElementById('amount').value);
     if (!/^[A-Z0-9]{6}$/.test(id)) return showToast("ID do destinatário inválido.", "error");
     if (!Number.isFinite(amt) || amt <= 0) return showToast("Valor inválido.", "error");
+    if (id === currentUser?.shortId) return showToast("Você não pode transferir para si mesmo.", "error");
+
+    const tax = Number((amt * currentTaxRate).toFixed(2));
+    const total = Number((amt + tax).toFixed(2));
+    const balanceAfter = Number(((currentUser?.balance || 0) - total).toFixed(2));
+
+    // Populate confirmation modal
+    const el = (selector) => document.getElementById(selector);
+    if (el('confirm-dest-id'))    el('confirm-dest-id').innerText    = id;
+    if (el('confirm-amount'))     el('confirm-amount').innerText     = formatMoney(amt);
+    if (el('confirm-tax'))        el('confirm-tax').innerText        = formatMoney(tax);
+    if (el('confirm-total'))      el('confirm-total').innerText      = formatMoney(total);
+    if (el('confirm-balance-after')) {
+        el('confirm-balance-after').innerText = formatMoney(balanceAfter);
+        el('confirm-balance-after').style.color = balanceAfter < 0 ? 'var(--red)' : 'var(--green)';
+    }
 
     pendingTransaction = { id, amt };
-    document.getElementById('pin-modal').classList.remove('hidden');
-    document.getElementById('confirm-pin-input').value = "";
+    el('transfer-confirm-modal')?.classList.remove('hidden');
 });
 
 document.getElementById('confirm-pin-btn').addEventListener('click', async () => {
@@ -2151,6 +2237,7 @@ document.getElementById('confirm-pin-btn').addEventListener('click', async () =>
     }
 
     const pinInput = document.getElementById('confirm-pin-input').value;
+    if (pinInput.length < 4) { showToast("PIN incompleto.", "error"); return; }
     if (await verifyAndMigratePin(currentUser, pinInput)) {
         const ok = await transferLogic(pendingTransaction.id, pendingTransaction.amt);
         if (ok) closeModal('pin-modal');
@@ -2297,7 +2384,7 @@ function initStaticListeners() {
     if (pinInput && !pinInput.dataset.bound) {
         pinInput.dataset.bound = '1';
         pinInput.addEventListener('input', () => {
-            pinInput.value = pinInput.value.replace(/\D/g, '').slice(0, 4);
+            pinInput.value = pinInput.value.replace(/\D/g, '').slice(0, 6);
         });
     }
 
