@@ -35,14 +35,72 @@
                 <i class="fas fa-lock"></i>
             </div>
             <h3>Confirmação de Segurança</h3>
-            <p>Digite seu PIN de 4 dígitos para autorizar</p>
-            <input type="password" id="confirm-pin-input" maxlength="4" placeholder="• • • •" autocomplete="off">
+            <p>Digite seu PIN de 4 a 6 dígitos para autorizar</p>
+            <input type="password" id="confirm-pin-input" maxlength="6" placeholder="••••••" autocomplete="off" inputmode="numeric" pattern="\d{4,6}">
             <div class="modal-actions">
                 <button id="confirm-pin-btn">
                     <i class="fas fa-check" style="margin-right:6px"></i>Confirmar
                 </button>
                 <button class="secondary" onclick="closeModal('pin-modal')">Cancelar</button>
             </div>
+        </div>
+    </div>
+
+    <!-- ═══ TRANSFER CONFIRM MODAL ══════════════════════════════ -->
+    <div id="transfer-confirm-modal" class="modal-overlay hidden">
+        <div class="modal-glass">
+            <div class="modal-icon success">
+                <i class="fas fa-shield-alt"></i>
+            </div>
+            <h3>Deseja confirmar a transferência?</h3>
+            <p>Confira os dados antes de autorizar com seu PIN.</p>
+            <div class="modal-summary">
+                <div class="summary-row"><span>Destino</span> <strong id="confirm-destination">-</strong></div>
+                <div class="summary-row"><span>Valor enviado</span> <strong id="confirm-amount">R$ 0,00</strong></div>
+                <div class="summary-row"><span>Imposto</span> <strong id="confirm-tax">R$ 0,00</strong></div>
+                <div class="summary-row total"><span>Total debitado</span> <strong id="confirm-total">R$ 0,00</strong></div>
+                <div class="summary-row"><span>Saldo após</span> <strong id="confirm-balance-after">R$ 0,00</strong></div>
+            </div>
+            <div class="modal-actions">
+                <button id="confirm-transfer-btn">
+                    <i class="fas fa-check" style="margin-right:6px"></i>Confirmar
+                </button>
+                <button class="secondary" onclick="closeModal('transfer-confirm-modal')">Cancelar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══ SETTINGS MODAL ══════════════════════════════════════ -->
+    <div id="settings-modal" class="modal-overlay hidden">
+        <div class="modal-glass settings-style">
+            <div class="modal-icon">
+                <i class="fas fa-cog"></i>
+            </div>
+            <h3>Configurações</h3>
+            <p>Atualize seus dados de acesso e identificação.</p>
+
+            <div class="settings-block">
+                <label for="settings-new-name">Nome de usuário</label>
+                <input type="text" id="settings-new-name" placeholder="Novo nome" maxlength="40">
+                <button class="secondary" onclick="changeAccountName()">
+                    <i class="fas fa-user-edit" style="margin-right:6px;"></i>Atualizar Nome
+                </button>
+            </div>
+
+            <div class="settings-block">
+                <label>Senha da conta</label>
+                <p id="password-cooldown-status" class="section-copy">Você pode alterar sua senha agora.</p>
+                <input type="password" id="current-password" placeholder="Senha atual" autocomplete="current-password">
+                <input type="password" id="new-password" placeholder="Nova senha (mín. 6 caracteres)" autocomplete="new-password">
+                <input type="password" id="confirm-new-password" placeholder="Confirmar nova senha" autocomplete="new-password">
+                <button id="change-password-btn" class="secondary" onclick="changeAccountPassword()">
+                    <i class="fas fa-lock" style="margin-right:6px;"></i>Trocar Senha
+                </button>
+            </div>
+
+            <button onclick="closeModal('settings-modal')" style="margin-top:6px;">
+                <i class="fas fa-times" style="margin-right:6px"></i>Fechar
+            </button>
         </div>
     </div>
 
@@ -95,7 +153,7 @@
                 <input type="text"     id="fullname"   placeholder="Nome Completo"            style="display:none;">
                 <input type="email"    id="email"      placeholder="E-mail"        required>
                 <input type="password" id="password"   placeholder="Senha"         required>
-                <input type="password" id="reg-pin"    placeholder="PIN de 4 dígitos (ex: 1234)" maxlength="4" pattern="\d{4}" style="display:none;">
+                <input type="password" id="reg-pin"    placeholder="PIN de 4 a 6 dígitos" maxlength="6" pattern="\d{4,6}" inputmode="numeric" style="display:none;">
                 <select                id="role-select" style="display:none;">
                     <option value="user">Cidadão</option>
                     <option value="merchant">Comércio (PJ)</option>
@@ -115,6 +173,9 @@
                     </div>
                 </div>
                 <div class="header-icons">
+                    <button class="icon-only" onclick="openSettingsModal()" title="Configurações">
+                        <i class="fas fa-cog"></i>
+                    </button>
                     <button class="icon-only notification-trigger" onclick="navTo('notifications')" title="Notificações">
                         <i class="fas fa-bell"></i>
                         <span id="notification-badge" class="icon-badge hidden">0</span>
@@ -174,24 +235,8 @@
 
             <!-- Admin access -->
             <button id="admin-btn" class="hidden wide-btn" onclick="navTo('admin-panel')">
-                <i class="fas fa-shield-alt" style="margin-right:8px;"></i>Painel da Prefeitura
+                <i class="fas fa-shield-alt" style="margin-right:8px;"></i>Painel Admin/Prefeitura
             </button>
-
-            <!-- Password security -->
-            <div class="glass-card">
-                <div class="section-head">
-                    <div>
-                        <h3><i class="fas fa-key" style="font-size:0.85rem; margin-right:6px; opacity:0.6;"></i>Segurança da Conta</h3>
-                        <p id="password-cooldown-status" class="section-copy">Você pode alterar sua senha agora.</p>
-                    </div>
-                </div>
-                <input type="password" id="current-password"     placeholder="Senha atual">
-                <input type="password" id="new-password"         placeholder="Nova senha (mín. 6 caracteres)">
-                <input type="password" id="confirm-new-password" placeholder="Confirmar nova senha">
-                <button id="change-password-btn" class="secondary" onclick="changeAccountPassword()">
-                    <i class="fas fa-lock" style="margin-right:6px;"></i>Trocar Senha
-                </button>
-            </div>
 
             <!-- History -->
             <div class="history-preview">

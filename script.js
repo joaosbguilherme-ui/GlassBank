@@ -101,9 +101,11 @@ async function checkPin(pin, pinSalt, pinHash) {
 }
 
 async function verifyAndMigratePin(user, candidatePin) {
-    if (await checkPin(candidatePin, user.pinSalt, user.pinHash)) return true;
-    if (typeof user.pin === 'string' && candidatePin === user.pin) {
-        const next = await makePinHash(candidatePin);
+    const cleanPin = String(candidatePin || '').trim();
+    if (await checkPin(cleanPin, user.pinSalt, user.pinHash)) return true;
+    const legacyPin = user.pin === undefined || user.pin === null ? '' : String(user.pin).trim();
+    if (/^\d{4,6}$/.test(legacyPin) && cleanPin === legacyPin) {
+        const next = await makePinHash(cleanPin);
         await updateDoc(doc(db, "users", user.uid), {
             pinHash: next.pinHash,
             pinSalt: next.pinSalt,
@@ -129,7 +131,7 @@ function hasGovernmentAccess(userData = currentUser) {
 
 function ensureAdmin() {
     if (!hasGovernmentAccess()) {
-        showToast("Acao restrita a prefeitura.", "error");
+        showToast("Acao restrita a Admin ou Prefeitura.", "error");
         return false;
     }
     return true;
@@ -546,13 +548,33 @@ window.navTo = navTo;
 function closeModal(id) {
     const modal = document.getElementById(id);
     if (modal) modal.classList.add('hidden');
-    if (id === 'pin-modal') {
+    if (id === 'pin-modal' || id === 'transfer-confirm-modal') {
         pendingTransaction = null;
         const pinInput = document.getElementById('confirm-pin-input');
         if (pinInput) pinInput.value = '';
     }
+    if (id === 'settings-modal') {
+        ['current-password', 'new-password', 'confirm-new-password'].forEach((inputId) => {
+            const input = document.getElementById(inputId);
+            if (input) input.value = '';
+        });
+    }
 }
 window.closeModal = closeModal;
+
+function openSettingsModal() {
+    if (!currentUser) return;
+    const modal = document.getElementById('settings-modal');
+    const nameInput = document.getElementById('settings-new-name');
+    if (nameInput) nameInput.value = currentUser.name || '';
+    ['current-password', 'new-password', 'confirm-new-password'].forEach((id) => {
+        const input = document.getElementById(id);
+        if (input) input.value = '';
+    });
+    renderPasswordSecurity();
+    if (modal) modal.classList.remove('hidden');
+}
+window.openSettingsModal = openSettingsModal;
 
 function toggleAuth(mode) {
     const isReg = mode === 'register';
@@ -656,7 +678,7 @@ function initializeUser(uid) {
         const balance = Number(currentUser.balance || 0);
 
         document.getElementById('user-name').innerText = userName;
-        document.getElementById('user-role').innerText = role === 'admin' ? 'Prefeitura' : role === 'merchant' ? 'Comércio' : 'Cidadão';
+        document.getElementById('user-role').innerText = currentUser.uid === CITY_HALL_ID ? 'Prefeitura' : role === 'admin' ? 'Admin' : role === 'merchant' ? 'Comércio' : 'Cidadão';
         document.getElementById('user-balance').innerText = formatMoney(balance);
         document.getElementById('user-short-id').innerText = currentUser.shortId || '---';
         document.getElementById('user-avatar').src = `https://ui-avatars.com/api/?name=${encodeURIComponent(userName)}&background=random&color=fff`;
@@ -1801,7 +1823,7 @@ window.votePoll = async (pollId) => {
 };
 
 window.deletePoll = async (pollId) => {
-    if (!hasGovernmentAccess()) { showToast('Ação restrita à prefeitura.', 'error'); return; }
+    if (!hasGovernmentAccess()) { showToast('Ação restrita a Admin ou Prefeitura.', 'error'); return; }
     if (!confirm('Remover esta enquete? Esta ação não pode ser desfeita.')) return;
     const cityRef = doc(db, "users", CITY_HALL_ID);
     try {
@@ -2091,7 +2113,7 @@ async function showTransferReceipt(data) {
 
 window.executeTransaction = async (shortId, amount) => transferLogic(shortId, amount);
 
-async function transferLogic(shortId, amount) {
+async function transferLogic(shortId, amount, expectedTaxRate = null) {
     if (!currentUser) return false;
 
     const receiverShortId = String(shortId || '').toUpperCase().trim();
@@ -2107,7 +2129,7 @@ async function transferLogic(shortId, amount) {
     }
 
     try {
-        const q = query(collection(db, "users"), where("shortId", "==", receiverShortId));
+        const q = query(collection(db, "users"), where("shortId", "==", receiverShortId), limit(2));
         const receiverSnap = await getDocs(q);
         if (receiverSnap.empty) throw new Error("Destinatário não encontrado.");
         if (receiverSnap.size > 1) throw new Error("ID do destinatário duplicado. Contate o suporte.");
@@ -2132,6 +2154,9 @@ async function transferLogic(shortId, amount) {
 
             receiverName = rDoc.data().name || 'Destinatário';
             const taxRate = cDoc.exists() ? Number(cDoc.data().customTax || 0.02) : 0.02;
+            if (expectedTaxRate !== null && Math.abs(taxRate - Number(expectedTaxRate)) > 0.000001) {
+                throw new Error("A taxa municipal mudou. Revise a transferência antes de confirmar.");
+            }
             const tax = Number((transferAmount * taxRate).toFixed(2));
             const total = Number((transferAmount + tax).toFixed(2));
             receiptTax = tax;
@@ -2207,6 +2232,8 @@ document.getElementById('transfer-form').addEventListener('submit', async (e) =>
     e.preventDefault();
     const id = document.getElementById('dest-id').value.toUpperCase().trim();
     const amt = toNumber(document.getElementById('amount').value);
+    const submitButton = e.submitter || document.querySelector('#transfer-form button[type="submit"]');
+    if (!currentUser) return showToast("Entre na conta para transferir.", "error");
     if (!/^[A-Z0-9]{6}$/.test(id)) return showToast("ID do destinatário inválido.", "error");
     if (!Number.isFinite(amt) || amt <= 0) return showToast("Valor inválido.", "error");
     if (id === currentUser?.shortId) return showToast("Você não pode transferir para si mesmo.", "error");
@@ -2214,20 +2241,48 @@ document.getElementById('transfer-form').addEventListener('submit', async (e) =>
     const tax = Number((amt * currentTaxRate).toFixed(2));
     const total = Number((amt + tax).toFixed(2));
     const balanceAfter = Number(((currentUser?.balance || 0) - total).toFixed(2));
+    if (balanceAfter < 0) return showToast("Saldo insuficiente para cobrir valor e imposto.", "error");
 
-    // Populate confirmation modal
-    const el = (selector) => document.getElementById(selector);
-    if (el('confirm-dest-id'))    el('confirm-dest-id').innerText    = id;
-    if (el('confirm-amount'))     el('confirm-amount').innerText     = formatMoney(amt);
-    if (el('confirm-tax'))        el('confirm-tax').innerText        = formatMoney(tax);
-    if (el('confirm-total'))      el('confirm-total').innerText      = formatMoney(total);
-    if (el('confirm-balance-after')) {
-        el('confirm-balance-after').innerText = formatMoney(balanceAfter);
-        el('confirm-balance-after').style.color = balanceAfter < 0 ? 'var(--red)' : 'var(--green)';
+    if (submitButton) submitButton.disabled = true;
+    try {
+        const receiverSnap = await getDocs(query(collection(db, "users"), where("shortId", "==", id), limit(2)));
+        if (receiverSnap.empty) throw new Error("Destinatário não encontrado.");
+        if (receiverSnap.size > 1) throw new Error("ID do destinatário duplicado. Contate o suporte.");
+        if (receiverSnap.docs[0].id === currentUser.uid) throw new Error("Você não pode transferir para si mesmo.");
+
+        const receiverData = receiverSnap.docs[0].data();
+        const receiverName = receiverData.name || 'Destinatário';
+        const el = (selector) => document.getElementById(selector);
+        if (el('confirm-destination')) el('confirm-destination').innerText = `${receiverName} (${id})`;
+        if (el('confirm-amount')) el('confirm-amount').innerText = formatMoney(amt);
+        if (el('confirm-tax')) el('confirm-tax').innerText = formatMoney(tax);
+        if (el('confirm-total')) el('confirm-total').innerText = formatMoney(total);
+        if (el('confirm-balance-after')) {
+            el('confirm-balance-after').innerText = formatMoney(balanceAfter);
+            el('confirm-balance-after').style.color = balanceAfter < 0 ? 'var(--red)' : 'var(--green)';
+        }
+
+        pendingTransaction = { id, amt, taxRate: currentTaxRate };
+        el('transfer-confirm-modal')?.classList.remove('hidden');
+    } catch (error) {
+        logSystemFailure('prepareTransferConfirmation', error, { userId: currentUser?.uid, receiverShortId: id, amount: amt }).catch(() => {});
+        showToast(toErrorMessage(error), 'error');
+    } finally {
+        if (submitButton) submitButton.disabled = false;
+    }
+});
+
+document.getElementById('confirm-transfer-btn').addEventListener('click', () => {
+    if (!pendingTransaction) {
+        showToast("Nenhuma transação pendente.", "error");
+        return;
     }
 
-    pendingTransaction = { id, amt };
-    el('transfer-confirm-modal')?.classList.remove('hidden');
+    document.getElementById('transfer-confirm-modal')?.classList.add('hidden');
+    const pinInput = document.getElementById('confirm-pin-input');
+    if (pinInput) pinInput.value = '';
+    document.getElementById('pin-modal')?.classList.remove('hidden');
+    setTimeout(() => pinInput?.focus(), 50);
 });
 
 document.getElementById('confirm-pin-btn').addEventListener('click', async () => {
@@ -2237,12 +2292,22 @@ document.getElementById('confirm-pin-btn').addEventListener('click', async () =>
     }
 
     const pinInput = document.getElementById('confirm-pin-input').value;
-    if (pinInput.length < 4) { showToast("PIN incompleto.", "error"); return; }
-    if (await verifyAndMigratePin(currentUser, pinInput)) {
-        const ok = await transferLogic(pendingTransaction.id, pendingTransaction.amt);
-        if (ok) closeModal('pin-modal');
-    } else {
-        showToast("PIN Incorreto", "error");
+    if (!/^\d{4,6}$/.test(pinInput)) { showToast("PIN deve ter entre 4 e 6 dígitos.", "error"); return; }
+    const button = document.getElementById('confirm-pin-btn');
+    if (button) button.disabled = true;
+    try {
+        if (await verifyAndMigratePin(currentUser, pinInput)) {
+            const tx = { ...pendingTransaction };
+            const ok = await transferLogic(tx.id, tx.amt, tx.taxRate);
+            if (ok) closeModal('pin-modal');
+        } else {
+            showToast("PIN Incorreto", "error");
+        }
+    } catch (error) {
+        logSystemFailure('confirmTransferPin', error, { userId: currentUser?.uid, receiverShortId: pendingTransaction?.id }).catch(() => {});
+        showToast(toErrorMessage(error), 'error');
+    } finally {
+        if (button) button.disabled = false;
     }
 });
 
@@ -2380,6 +2445,22 @@ function initStaticListeners() {
         amountInput.addEventListener('input', updateTransferPreview);
     }
 
+    const destIdInput = document.getElementById('dest-id');
+    if (destIdInput && !destIdInput.dataset.bound) {
+        destIdInput.dataset.bound = '1';
+        destIdInput.addEventListener('input', () => {
+            destIdInput.value = destIdInput.value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 6);
+        });
+    }
+
+    const regPinInput = document.getElementById('reg-pin');
+    if (regPinInput && !regPinInput.dataset.bound) {
+        regPinInput.dataset.bound = '1';
+        regPinInput.addEventListener('input', () => {
+            regPinInput.value = regPinInput.value.replace(/\D/g, '').slice(0, 6);
+        });
+    }
+
     const pinInput = document.getElementById('confirm-pin-input');
     if (pinInput && !pinInput.dataset.bound) {
         pinInput.dataset.bound = '1';
@@ -2397,19 +2478,8 @@ function initStaticListeners() {
     }
 }
 
+initStaticListeners();
 toggleAuth('login');
 updateTransferPreview();
-
-
-
-
-
-
-
-
-
-
-
-
 
 

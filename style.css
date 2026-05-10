@@ -791,11 +791,78 @@ input[type=range]::-webkit-slider-thumb:hover {
     margin-bottom: 18px;
 }
 .modal-glass input { text-align: center; }
+.modal-glass label {
+    display: block;
+    text-align: left;
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+}
+
+.modal-icon {
+    font-size: 1.45rem;
+    color: var(--text-primary);
+    background: var(--bg-card);
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 16px;
+    border: 1px solid var(--border-mid);
+}
+
+.modal-icon.success {
+    color: var(--green);
+    background: var(--green-dim);
+    border-color: rgba(0,232,124,0.25);
+}
+
+.modal-summary {
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-md);
+    padding: 12px;
+    margin-bottom: 14px;
+    text-align: left;
+}
+
+.summary-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 7px 0;
+    color: var(--text-secondary);
+    font-size: 0.83rem;
+}
+
+.summary-row + .summary-row { border-top: 1px solid var(--border-subtle); }
+.summary-row strong { color: var(--text-primary); text-align: right; word-break: break-word; }
+.summary-row.total strong { color: var(--green); }
+
+.settings-style {
+    max-height: min(760px, 92vh);
+    overflow-y: auto;
+    text-align: center;
+}
+
+.settings-block {
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-md);
+    padding: 14px;
+    margin-bottom: 12px;
+}
+
+.settings-block input { text-align: left; }
+.settings-block button { margin-bottom: 0; }
 
 /* PIN Input special */
 #confirm-pin-input {
     font-size: 1.6rem !important;
-    letter-spacing: 0.5em !important;
+    letter-spacing: 0.35em !important;
     text-align: center;
     background: var(--bg-deep) !important;
     border: 2px solid var(--border-mid) !important;
