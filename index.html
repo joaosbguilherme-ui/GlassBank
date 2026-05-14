@@ -36,6 +36,7 @@
             </div>
             <h3>Confirmação de Segurança</h3>
             <p>Digite seu PIN de 4 a 6 dígitos para autorizar</p>
+            <p id="confirm-pin-status" class="section-copy"></p>
             <input type="password" id="confirm-pin-input" maxlength="6" placeholder="••••••" autocomplete="off" inputmode="numeric" pattern="\d{4,6}">
             <div class="modal-actions">
                 <button id="confirm-pin-btn">
@@ -91,10 +92,21 @@
                 <label>Senha da conta</label>
                 <p id="password-cooldown-status" class="section-copy">Você pode alterar sua senha agora.</p>
                 <input type="password" id="current-password" placeholder="Senha atual" autocomplete="current-password">
-                <input type="password" id="new-password" placeholder="Nova senha (mín. 6 caracteres)" autocomplete="new-password">
+                <input type="password" id="new-password" placeholder="Nova senha forte" autocomplete="new-password">
                 <input type="password" id="confirm-new-password" placeholder="Confirmar nova senha" autocomplete="new-password">
                 <button id="change-password-btn" class="secondary" onclick="changeAccountPassword()">
                     <i class="fas fa-lock" style="margin-right:6px;"></i>Trocar Senha
+                </button>
+            </div>
+
+            <div class="settings-block">
+                <label>PIN de transação</label>
+                <p id="pin-security-status" class="section-copy">Seu PIN autoriza transferências.</p>
+                <input type="password" id="current-pin" placeholder="PIN atual" maxlength="6" autocomplete="off" inputmode="numeric" pattern="\d{4,6}">
+                <input type="password" id="new-pin" placeholder="Novo PIN (4 a 6 dígitos)" maxlength="6" autocomplete="off" inputmode="numeric" pattern="\d{4,6}">
+                <input type="password" id="confirm-new-pin" placeholder="Confirmar novo PIN" maxlength="6" autocomplete="off" inputmode="numeric" pattern="\d{4,6}">
+                <button id="change-pin-btn" class="secondary" onclick="changeAccountPin()">
+                    <i class="fas fa-key" style="margin-right:6px;"></i>Trocar PIN
                 </button>
             </div>
 
@@ -159,6 +171,7 @@
                     <option value="merchant">Comércio (PJ)</option>
                 </select>
                 <button type="submit" id="auth-btn">Entrar</button>
+                <button type="button" id="forgot-password-btn" class="text-link" onclick="requestPasswordReset()">Esqueci minha senha</button>
             </form>
         </section>
 

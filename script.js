@@ -1,5 +1,5 @@
 ﻿import { initializeApp } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-app.js";
-import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, onAuthStateChanged, signOut, EmailAuthProvider, reauthenticateWithCredential, updatePassword } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-auth.js";
+import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, onAuthStateChanged, signOut, EmailAuthProvider, reauthenticateWithCredential, updatePassword, sendPasswordResetEmail } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-auth.js";
 import { getFirestore, doc, setDoc, updateDoc, collection, query, where, onSnapshot, runTransaction, serverTimestamp, orderBy, limit, getDocs, increment, addDoc, deleteField } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-firestore.js";
 
 // CONFIGURAÇÃO FIREBASE (MANTENHA A SUA)
@@ -23,8 +23,10 @@ let dailyRewardValue = 50;
 let html5QrcodeScanner = null;
 let scannerIsRunning = false;
 let pendingTransaction = null;
+let activePinAuthorization = null;
 let currentTransactions = [];
 let stockMarketInitialized = false;
+let currentStockPrice = 0;
 let unsubUser = null;
 let unsubTransactions = null;
 let unsubCity = null;
@@ -53,6 +55,11 @@ const MAX_NOTIFICATION_READ_IDS = 200;
 const MAX_NOTIFICATION_ITEMS = 40;
 const PASSWORD_CHANGE_COOLDOWN_MINUTES = 30;
 const MAX_INVESTMENT_POLLS = 40;
+const PASSWORD_MIN_LENGTH = 10;
+const PIN_MAX_FAILED_ATTEMPTS = 5;
+const PIN_LOCK_MINUTES = 15;
+const PIN_AUTH_WINDOW_MS = 60 * 1000;
+const WEAK_PINS = new Set(['0000', '1111', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999', '1234', '4321', '123456', '654321']);
 
 const toErrorMessage = (error) => {
     if (typeof error === 'string') return error;
@@ -224,6 +231,189 @@ function setLocalPasswordChangedAt(timestampMs = Date.now(), uid = currentUser?.
     } catch (_) {
         // Local fallback is optional.
     }
+}
+
+function normalizeEmail(value) {
+    return String(value || '').trim().toLowerCase();
+}
+
+function normalizeAccountName(value) {
+    return String(value || '').trim().replace(/\s+/g, ' ');
+}
+
+function validateAccountName(name) {
+    const errors = [];
+    if (!name || name.length < 2) errors.push('Nome deve ter pelo menos 2 caracteres.');
+    if (name.length > 40) errors.push('Nome muito longo (máximo 40 caracteres).');
+    if (/[<>]/.test(name)) errors.push('Nome não pode conter sinais de HTML.');
+    if (name && !/[A-Za-zÀ-ÖØ-öø-ÿ]/.test(name)) errors.push('Nome deve conter letras.');
+    return errors;
+}
+
+function getPasswordPolicyErrors(password, context = {}) {
+    const value = String(password || '');
+    const lower = value.toLowerCase();
+    const errors = [];
+    if (value.length < PASSWORD_MIN_LENGTH) errors.push(`Use pelo menos ${PASSWORD_MIN_LENGTH} caracteres.`);
+    if (!/[a-z]/.test(value)) errors.push('Inclua letra minúscula.');
+    if (!/[A-Z]/.test(value)) errors.push('Inclua letra maiúscula.');
+    if (!/\d/.test(value)) errors.push('Inclua número.');
+    if (!/[^A-Za-z0-9]/.test(value)) errors.push('Inclua símbolo.');
+    if (/(.)\1{3,}/.test(value)) errors.push('Evite caracteres repetidos em sequência.');
+
+    const emailLocal = normalizeEmail(context.email || currentUser?.email).split('@')[0] || '';
+    if (emailLocal.length >= 3 && lower.includes(emailLocal.toLowerCase())) {
+        errors.push('Não use partes do e-mail na senha.');
+    }
+
+    const nameTokens = normalizeAccountName(context.name || currentUser?.name)
+        .toLowerCase()
+        .split(/\s+/)
+        .filter((token) => token.length >= 3);
+    if (nameTokens.some((token) => lower.includes(token))) {
+        errors.push('Não use partes do nome na senha.');
+    }
+
+    if (['password', 'senha123', 'glassbank', 'qwerty123'].includes(lower)) {
+        errors.push('Escolha uma senha menos previsível.');
+    }
+
+    return errors;
+}
+
+function getPinPolicyError(pin) {
+    const cleanPin = String(pin || '').trim();
+    if (!/^\d{4,6}$/.test(cleanPin)) return 'PIN deve ter entre 4 e 6 dígitos.';
+    if (WEAK_PINS.has(cleanPin) || /^(\d)\1+$/.test(cleanPin)) return 'Evite PINs óbvios ou com dígitos repetidos.';
+
+    const digits = [...cleanPin].map((digit) => Number(digit));
+    const ascending = digits.every((digit, index) => index === 0 || digit === digits[index - 1] + 1);
+    const descending = digits.every((digit, index) => index === 0 || digit === digits[index - 1] - 1);
+    if (ascending || descending) return 'Evite sequências numéricas no PIN.';
+
+    return '';
+}
+
+function getPinLockRemainingMs(userData = currentUser) {
+    const lockedUntilMs = timestampToMillis(userData?.pinLockedUntil, 0);
+    return Math.max(0, lockedUntilMs - Date.now());
+}
+
+function formatMinutesRemaining(ms) {
+    return Math.max(1, Math.ceil(ms / (60 * 1000)));
+}
+
+async function resetPinFailureState(uid = currentUser?.uid) {
+    if (!uid) return;
+    await updateDoc(doc(db, "users", uid), {
+        failedPinAttempts: 0,
+        pinLockedUntil: null,
+        lastFailedPinAt: null
+    });
+    if (currentUser?.uid === uid) {
+        currentUser = {
+            ...currentUser,
+            failedPinAttempts: 0,
+            pinLockedUntil: null,
+            lastFailedPinAt: null
+        };
+    }
+}
+
+async function recordFailedPinAttempt(uid = currentUser?.uid) {
+    if (!uid) return { attempts: 0, remainingMs: 0 };
+
+    let attempts = 0;
+    let lockUntilMs = 0;
+    await runTransaction(db, async (t) => {
+        const userRef = doc(db, "users", uid);
+        const userDoc = await t.get(userRef);
+        if (!userDoc.exists()) throw new Error("Usuário não encontrado.");
+
+        const data = userDoc.data();
+        const existingLockMs = timestampToMillis(data.pinLockedUntil, 0);
+        if (existingLockMs > Date.now()) {
+            attempts = Number(data.failedPinAttempts || 0);
+            lockUntilMs = existingLockMs;
+            return;
+        }
+
+        const storedAttempts = existingLockMs > 0 && existingLockMs <= Date.now()
+            ? 0
+            : Number(data.failedPinAttempts || 0);
+        attempts = storedAttempts + 1;
+        const update = {
+            failedPinAttempts: attempts,
+            lastFailedPinAt: serverTimestamp(),
+            pinLockedUntil: null
+        };
+
+        if (attempts >= PIN_MAX_FAILED_ATTEMPTS) {
+            lockUntilMs = Date.now() + (PIN_LOCK_MINUTES * 60 * 1000);
+            update.pinLockedUntil = new Date(lockUntilMs);
+        }
+
+        t.update(userRef, update);
+    });
+
+    if (currentUser?.uid === uid) {
+        currentUser = {
+            ...currentUser,
+            failedPinAttempts: attempts,
+            pinLockedUntil: lockUntilMs ? new Date(lockUntilMs) : null
+        };
+    }
+
+    return { attempts, remainingMs: Math.max(0, lockUntilMs - Date.now()) };
+}
+
+function getPinFailureMessage(result) {
+    if (result?.remainingMs > 0) {
+        return `PIN bloqueado por ${formatMinutesRemaining(result.remainingMs)} min.`;
+    }
+    const attemptsLeft = Math.max(0, PIN_MAX_FAILED_ATTEMPTS - Number(result?.attempts || 0));
+    return attemptsLeft > 0
+        ? `PIN incorreto. Tentativas restantes: ${attemptsLeft}.`
+        : 'PIN incorreto.';
+}
+
+async function verifyPinWithRateLimit(user, candidatePin) {
+    const remainingMs = getPinLockRemainingMs(user);
+    if (remainingMs > 0) {
+        return { ok: false, remainingMs, attempts: Number(user?.failedPinAttempts || 0) };
+    }
+
+    const ok = await verifyAndMigratePin(user, candidatePin);
+    if (ok) {
+        if (Number(user?.failedPinAttempts || 0) > 0 || user?.pinLockedUntil) {
+            await resetPinFailureState(user.uid);
+        }
+        return { ok: true, attempts: 0, remainingMs: 0 };
+    }
+
+    return { ok: false, ...(await recordFailedPinAttempt(user.uid)) };
+}
+
+function createPinAuthorization(transaction) {
+    activePinAuthorization = {
+        uid: currentUser?.uid || '',
+        id: String(transaction?.id || '').toUpperCase(),
+        amount: Number(transaction?.amt),
+        taxRate: Number(transaction?.taxRate),
+        expiresAt: Date.now() + PIN_AUTH_WINDOW_MS,
+        nonce: randomHex(8)
+    };
+    return activePinAuthorization;
+}
+
+function isPinAuthorizationValid(authorization, receiverShortId, amount, expectedTaxRate) {
+    if (!authorization || authorization !== activePinAuthorization) return false;
+    if (authorization.uid !== currentUser?.uid) return false;
+    if (authorization.expiresAt < Date.now()) return false;
+    if (authorization.id !== receiverShortId) return false;
+    if (Math.abs(Number(authorization.amount) - Number(amount)) > 0.000001) return false;
+    if (expectedTaxRate !== null && Math.abs(Number(authorization.taxRate) - Number(expectedTaxRate)) > 0.000001) return false;
+    return true;
 }
 
 function canReceiveWelfare(userData = currentUser) {
@@ -403,6 +593,47 @@ function renderPasswordSecurity() {
     }
 }
 
+function renderPinSecurity() {
+    const statusEl = document.getElementById('pin-security-status');
+    const confirmStatusEl = document.getElementById('confirm-pin-status');
+    const changeButton = document.getElementById('change-pin-btn');
+    const confirmButton = document.getElementById('confirm-pin-btn');
+    const remainingMs = getPinLockRemainingMs(currentUser);
+    const attempts = Number(currentUser?.failedPinAttempts || 0);
+
+    if (remainingMs > 0) {
+        const message = `PIN bloqueado por ${formatMinutesRemaining(remainingMs)} min após muitas tentativas.`;
+        if (statusEl) statusEl.innerText = message;
+        if (confirmStatusEl) confirmStatusEl.innerText = message;
+        if (changeButton) changeButton.disabled = true;
+        if (confirmButton) confirmButton.disabled = true;
+        return;
+    }
+
+    if (statusEl) {
+        statusEl.innerText = attempts > 0
+            ? `Tentativas falhas recentes: ${attempts}/${PIN_MAX_FAILED_ATTEMPTS}.`
+            : 'Seu PIN autoriza transferências.';
+    }
+    if (confirmStatusEl) confirmStatusEl.innerText = '';
+    if (changeButton) changeButton.disabled = false;
+    if (confirmButton) confirmButton.disabled = false;
+}
+
+function clearSettingsSecretInputs() {
+    [
+        'current-password',
+        'new-password',
+        'confirm-new-password',
+        'current-pin',
+        'new-pin',
+        'confirm-new-pin'
+    ].forEach((inputId) => {
+        const input = document.getElementById(inputId);
+        if (input) input.value = '';
+    });
+}
+
 function getUserContacts() {
     return Array.isArray(currentUser?.contacts) ? [...currentUser.contacts] : [];
 }
@@ -464,6 +695,10 @@ async function ensureUserDefaults(uid, data) {
     if (!('lastLoanAt' in data)) patch.lastLoanAt = null;
     if (!('lastLoanRepaymentAt' in data)) patch.lastLoanRepaymentAt = null;
     if (!('lastPasswordChangeAt' in data)) patch.lastPasswordChangeAt = null;
+    if (!Number.isFinite(Number(data.failedPinAttempts))) patch.failedPinAttempts = 0;
+    if (!('pinLockedUntil' in data)) patch.pinLockedUntil = null;
+    if (!('lastFailedPinAt' in data)) patch.lastFailedPinAt = null;
+    if (!('lastPinChangeAt' in data)) patch.lastPinChangeAt = null;
     if (!('welfareEligible' in data)) patch.welfareEligible = true;
     if (uid === CITY_HALL_ID) {
         if (!('hidePublicTaxTotal' in data)) patch.hidePublicTaxTotal = false;
@@ -550,14 +785,12 @@ function closeModal(id) {
     if (modal) modal.classList.add('hidden');
     if (id === 'pin-modal' || id === 'transfer-confirm-modal') {
         pendingTransaction = null;
+        activePinAuthorization = null;
         const pinInput = document.getElementById('confirm-pin-input');
         if (pinInput) pinInput.value = '';
     }
     if (id === 'settings-modal') {
-        ['current-password', 'new-password', 'confirm-new-password'].forEach((inputId) => {
-            const input = document.getElementById(inputId);
-            if (input) input.value = '';
-        });
+        clearSettingsSecretInputs();
     }
 }
 window.closeModal = closeModal;
@@ -567,11 +800,9 @@ function openSettingsModal() {
     const modal = document.getElementById('settings-modal');
     const nameInput = document.getElementById('settings-new-name');
     if (nameInput) nameInput.value = currentUser.name || '';
-    ['current-password', 'new-password', 'confirm-new-password'].forEach((id) => {
-        const input = document.getElementById(id);
-        if (input) input.value = '';
-    });
+    clearSettingsSecretInputs();
     renderPasswordSecurity();
+    renderPinSecurity();
     if (modal) modal.classList.remove('hidden');
 }
 window.openSettingsModal = openSettingsModal;
@@ -582,6 +813,8 @@ function toggleAuth(mode) {
     document.getElementById('role-select').style.display = isReg ? 'block' : 'none';
     document.getElementById('reg-pin').style.display = isReg ? 'block' : 'none';
     document.getElementById('auth-btn').innerText = isReg ? 'Cadastrar' : 'Entrar';
+    const forgotButton = document.getElementById('forgot-password-btn');
+    if (forgotButton) forgotButton.style.display = isReg ? 'none' : 'inline-flex';
     document.getElementById('auth-form').dataset.mode = mode;
     document.querySelectorAll('.auth-tabs button').forEach(btn => btn.classList.remove('active'));
     const activeBtn = document.querySelector(`.auth-tabs button[onclick="toggleAuth('${mode}')"]`);
@@ -596,16 +829,20 @@ authForm.addEventListener('submit', async (e) => {
     const btn = document.getElementById('auth-btn');
     btn.disabled = true; btn.innerText = "Aguarde...";
     const mode = authForm.dataset.mode || 'login';
-    const email = document.getElementById('email').value;
+    const email = normalizeEmail(document.getElementById('email').value);
     const password = document.getElementById('password').value;
 
     try {
         if (mode === 'register') {
-            const name = document.getElementById('fullname').value.trim();
+            const name = normalizeAccountName(document.getElementById('fullname').value);
             const role = document.getElementById('role-select').value;
             const pin = document.getElementById('reg-pin').value.trim();
-            if (!name) throw new Error("Informe seu nome completo.");
-            if (!/^\d{4,6}$/.test(pin)) throw new Error("PIN deve ter entre 4 e 6 dígitos.");
+            const nameErrors = validateAccountName(name);
+            const passwordErrors = getPasswordPolicyErrors(password, { email, name });
+            const pinError = getPinPolicyError(pin);
+            if (nameErrors.length) throw new Error(nameErrors[0]);
+            if (passwordErrors.length) throw new Error(`Senha fraca: ${passwordErrors.join(' ')}`);
+            if (pinError) throw new Error(pinError);
             if (!allowedRoles.has(role)) throw new Error("Tipo de conta inválido.");
 
             const userCred = await createUserWithEmailAndPassword(auth, email, password);
@@ -620,6 +857,10 @@ authForm.addEventListener('submit', async (e) => {
                 stocks: { glasscoin: 0 },
                 contacts: [],
                 readNotificationIds: [],
+                failedPinAttempts: 0,
+                pinLockedUntil: null,
+                lastFailedPinAt: null,
+                lastPinChangeAt: null,
                 lastDailyClaim: null,
                 lastPasswordChangeAt: null,
                 loanOutstanding: 0,
@@ -641,6 +882,28 @@ authForm.addEventListener('submit', async (e) => {
     } catch (err) { showToast(toErrorMessage(err), 'error'); }
     finally { btn.disabled = false; btn.innerText = mode==='register'?'Cadastrar':'Entrar'; }
 });
+
+window.requestPasswordReset = async () => {
+    const emailInput = document.getElementById('email');
+    const email = normalizeEmail(emailInput?.value);
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        showToast('Informe seu e-mail para receber o link de recuperação.', 'error');
+        emailInput?.focus();
+        return;
+    }
+
+    const button = document.getElementById('forgot-password-btn');
+    if (button) button.disabled = true;
+    try {
+        await sendPasswordResetEmail(auth, email);
+        showToast('Se este e-mail estiver cadastrado, enviaremos um link de recuperação.');
+    } catch (error) {
+        logSystemFailure('requestPasswordReset', error, { email }).catch(() => {});
+        showToast('Se este e-mail estiver cadastrado, enviaremos um link de recuperação.');
+    } finally {
+        if (button) button.disabled = false;
+    }
+};
 
 onAuthStateChanged(auth, (user) => {
     if (user) {
@@ -696,6 +959,7 @@ function initializeUser(uid) {
         renderContactLists();
         renderNotifications();
         renderPasswordSecurity();
+        renderPinSecurity();
 
         if (hasGovernmentAccess()) {
             document.getElementById('admin-btn').classList.remove('hidden');
@@ -860,21 +1124,32 @@ window.savingsAction = async (type) => {
     if (!Number.isFinite(amount) || amount <= 0) return;
 
     try {
-        if (type === 'deposit') {
-            if (Number(currentUser.balance || 0) < amount) return showToast("Saldo insuficiente", "error");
-            await updateDoc(doc(db, "users", currentUser.uid), {
-                balance: increment(-amount),
-                savingsBalance: increment(amount)
-            });
-        } else {
-            if (Number(currentUser.savingsBalance || 0) < amount) return showToast("Saldo no cofre insuficiente", "error");
-            await updateDoc(doc(db, "users", currentUser.uid), {
-                balance: increment(amount),
-                savingsBalance: increment(-amount)
-            });
-        }
+        await runTransaction(db, async (t) => {
+            const userRef = doc(db, "users", currentUser.uid);
+            const userDoc = await t.get(userRef);
+            if (!userDoc.exists()) throw new Error("Usuário não encontrado.");
+
+            const data = userDoc.data();
+            const balance = Number(data.balance || 0);
+            const savingsBalance = Number(data.savingsBalance || 0);
+
+            if (type === 'deposit') {
+                if (balance < amount) throw new Error("Saldo insuficiente");
+                t.update(userRef, {
+                    balance: Number((balance - amount).toFixed(2)),
+                    savingsBalance: Number((savingsBalance + amount).toFixed(2))
+                });
+            } else {
+                if (savingsBalance < amount) throw new Error("Saldo no cofre insuficiente");
+                t.update(userRef, {
+                    balance: Number((balance + amount).toFixed(2)),
+                    savingsBalance: Number((savingsBalance - amount).toFixed(2))
+                });
+            }
+        });
         showToast("Operação no Cofre realizada!");
     } catch (e) {
+        logSystemFailure('savingsAction', e, { userId: currentUser?.uid, type, amount }).catch(() => {});
         showToast(toErrorMessage(e), "error");
     }
 };
@@ -912,7 +1187,7 @@ function initStockMarket() {
             trendEl.style.color = "var(--danger)";
         }
         
-        window.currentStockPrice = price;
+        currentStockPrice = price;
     };
 
     updateStock();
@@ -921,25 +1196,36 @@ function initStockMarket() {
 
 window.tradeStock = async (action) => {
     if (!currentUser) return;
-    const price = window.currentStockPrice;
+    const price = currentStockPrice;
     if (!price) return;
     
     try {
-        if(action === 'buy') {
-            if(Number(currentUser.balance || 0) < price) return showToast("Saldo insuficiente", "error");
-            await updateDoc(doc(db, "users", currentUser.uid), {
-                balance: increment(-price),
-                "stocks.glasscoin": increment(1)
-            });
-        } else {
-            if(!currentUser.stocks?.glasscoin || currentUser.stocks.glasscoin < 1) return showToast("Você não tem ações", "error");
-            await updateDoc(doc(db, "users", currentUser.uid), {
-                balance: increment(price),
-                "stocks.glasscoin": increment(-1)
-            });
-        }
+        await runTransaction(db, async (t) => {
+            const userRef = doc(db, "users", currentUser.uid);
+            const userDoc = await t.get(userRef);
+            if (!userDoc.exists()) throw new Error("Usuário não encontrado.");
+
+            const data = userDoc.data();
+            const balance = Number(data.balance || 0);
+            const stockCount = Number(data.stocks?.glasscoin || 0);
+
+            if(action === 'buy') {
+                if(balance < price) throw new Error("Saldo insuficiente");
+                t.update(userRef, {
+                    balance: Number((balance - price).toFixed(2)),
+                    "stocks.glasscoin": increment(1)
+                });
+            } else {
+                if(stockCount < 1) throw new Error("Você não tem ações");
+                t.update(userRef, {
+                    balance: Number((balance + price).toFixed(2)),
+                    "stocks.glasscoin": increment(-1)
+                });
+            }
+        });
         playSound('click');
     } catch (e) {
+        logSystemFailure('tradeStock', e, { userId: currentUser?.uid, action, price }).catch(() => {});
         showToast(toErrorMessage(e), "error");
     }
 };
@@ -1607,13 +1893,10 @@ window.changeAccountName = async () => {
     if (!currentUser) return;
     const input = document.getElementById('settings-new-name');
     if (!input) return;
-    const newName = input.value.trim();
-    if (!newName || newName.length < 2) {
-        showToast('Nome deve ter pelo menos 2 caracteres.', 'error');
-        return;
-    }
-    if (newName.length > 40) {
-        showToast('Nome muito longo (máximo 40 caracteres).', 'error');
+    const newName = normalizeAccountName(input.value);
+    const nameErrors = validateAccountName(newName);
+    if (nameErrors.length) {
+        showToast(nameErrors[0], 'error');
         return;
     }
     try {
@@ -1650,8 +1933,13 @@ window.changeAccountPassword = async () => {
         showToast('Preencha senha atual, nova senha e confirmacao.', 'error');
         return;
     }
-    if (newPassword.length < 6) {
-        showToast('A nova senha precisa ter pelo menos 6 caracteres.', 'error');
+    if (newPassword === currentPassword) {
+        showToast('A nova senha precisa ser diferente da atual.', 'error');
+        return;
+    }
+    const passwordErrors = getPasswordPolicyErrors(newPassword);
+    if (passwordErrors.length) {
+        showToast(`Senha fraca: ${passwordErrors.join(' ')}`, 'error');
         return;
     }
     if (newPassword !== confirmPassword) {
@@ -1674,9 +1962,7 @@ window.changeAccountPassword = async () => {
         } catch (cooldownError) {
             setLocalPasswordChangedAt();
             logSystemFailure('changeAccountPassword:cooldown', cooldownError, { userId: currentUser?.uid }).catch(() => {});
-            currentPasswordInput.value = '';
-            newPasswordInput.value = '';
-            confirmPasswordInput.value = '';
+            clearSettingsSecretInputs();
             renderPasswordSecurity();
             showToast('Senha alterada. O cooldown ficou salvo apenas neste dispositivo.', 'error');
             return;
@@ -1684,9 +1970,7 @@ window.changeAccountPassword = async () => {
 
         setLocalPasswordChangedAt();
 
-        currentPasswordInput.value = '';
-        newPasswordInput.value = '';
-        confirmPasswordInput.value = '';
+        clearSettingsSecretInputs();
         renderPasswordSecurity();
         showToast('Senha atualizada com sucesso.');
     } catch (error) {
@@ -1694,6 +1978,92 @@ window.changeAccountPassword = async () => {
         showToast(toErrorMessage(error), 'error');
     } finally {
         renderPasswordSecurity();
+    }
+};
+
+window.changeAccountPin = async () => {
+    if (!currentUser) return;
+
+    const currentPinInput = document.getElementById('current-pin');
+    const newPinInput = document.getElementById('new-pin');
+    const confirmPinInput = document.getElementById('confirm-new-pin');
+    const button = document.getElementById('change-pin-btn');
+    if (!currentPinInput || !newPinInput || !confirmPinInput || !button) return;
+
+    const currentPin = currentPinInput.value.trim();
+    const newPin = newPinInput.value.trim();
+    const confirmPin = confirmPinInput.value.trim();
+    const remainingMs = getPinLockRemainingMs(currentUser);
+
+    if (remainingMs > 0) {
+        showToast(`PIN bloqueado. Aguarde ${formatMinutesRemaining(remainingMs)} min.`, 'error');
+        renderPinSecurity();
+        return;
+    }
+
+    if (!currentPin || !newPin || !confirmPin) {
+        showToast('Preencha PIN atual, novo PIN e confirmacao.', 'error');
+        return;
+    }
+
+    if (!/^\d{4,6}$/.test(currentPin)) {
+        showToast('PIN atual inválido.', 'error');
+        return;
+    }
+
+    const pinError = getPinPolicyError(newPin);
+    if (pinError) {
+        showToast(pinError, 'error');
+        return;
+    }
+
+    if (newPin !== confirmPin) {
+        showToast('A confirmacao do novo PIN nao confere.', 'error');
+        return;
+    }
+
+    if (newPin === currentPin) {
+        showToast('O novo PIN precisa ser diferente do atual.', 'error');
+        return;
+    }
+
+    button.disabled = true;
+    try {
+        const result = await verifyPinWithRateLimit(currentUser, currentPin);
+        if (!result.ok) {
+            showToast(getPinFailureMessage(result), 'error');
+            renderPinSecurity();
+            return;
+        }
+
+        const nextPin = await makePinHash(newPin);
+        await updateDoc(doc(db, "users", currentUser.uid), {
+            pinHash: nextPin.pinHash,
+            pinSalt: nextPin.pinSalt,
+            pin: deleteField(),
+            failedPinAttempts: 0,
+            pinLockedUntil: null,
+            lastFailedPinAt: null,
+            lastPinChangeAt: serverTimestamp()
+        });
+
+        currentUser = {
+            ...currentUser,
+            pinHash: nextPin.pinHash,
+            pinSalt: nextPin.pinSalt,
+            pin: undefined,
+            failedPinAttempts: 0,
+            pinLockedUntil: null,
+            lastFailedPinAt: null
+        };
+        clearSettingsSecretInputs();
+        renderPinSecurity();
+        showToast('PIN atualizado com sucesso.');
+    } catch (error) {
+        logSystemFailure('changeAccountPin', error, { userId: currentUser?.uid }).catch(() => {});
+        showToast(toErrorMessage(error), 'error');
+    } finally {
+        renderPinSecurity();
     }
 };
 
@@ -2111,9 +2481,7 @@ async function showTransferReceipt(data) {
     modal.classList.remove('hidden');
 }
 
-window.executeTransaction = async (shortId, amount) => transferLogic(shortId, amount);
-
-async function transferLogic(shortId, amount, expectedTaxRate = null) {
+async function transferLogic(shortId, amount, expectedTaxRate = null, pinAuthorization = null) {
     if (!currentUser) return false;
 
     const receiverShortId = String(shortId || '').toUpperCase().trim();
@@ -2127,6 +2495,11 @@ async function transferLogic(shortId, amount, expectedTaxRate = null) {
         showToast("Valor inválido.", "error");
         return false;
     }
+    if (!isPinAuthorizationValid(pinAuthorization, receiverShortId, transferAmount, expectedTaxRate)) {
+        showToast("Confirme a operação com seu PIN antes de transferir.", "error");
+        return false;
+    }
+    activePinAuthorization = null;
 
     try {
         const q = query(collection(db, "users"), where("shortId", "==", receiverShortId), limit(2));
@@ -2278,9 +2651,17 @@ document.getElementById('confirm-transfer-btn').addEventListener('click', () => 
         return;
     }
 
+    const remainingMs = getPinLockRemainingMs(currentUser);
+    if (remainingMs > 0) {
+        showToast(`PIN bloqueado. Aguarde ${formatMinutesRemaining(remainingMs)} min.`, "error");
+        renderPinSecurity();
+        return;
+    }
+
     document.getElementById('transfer-confirm-modal')?.classList.add('hidden');
     const pinInput = document.getElementById('confirm-pin-input');
     if (pinInput) pinInput.value = '';
+    renderPinSecurity();
     document.getElementById('pin-modal')?.classList.remove('hidden');
     setTimeout(() => pinInput?.focus(), 50);
 });
@@ -2296,18 +2677,23 @@ document.getElementById('confirm-pin-btn').addEventListener('click', async () =>
     const button = document.getElementById('confirm-pin-btn');
     if (button) button.disabled = true;
     try {
-        if (await verifyAndMigratePin(currentUser, pinInput)) {
+        const pinResult = await verifyPinWithRateLimit(currentUser, pinInput);
+        if (pinResult.ok) {
             const tx = { ...pendingTransaction };
-            const ok = await transferLogic(tx.id, tx.amt, tx.taxRate);
+            const authorization = createPinAuthorization(tx);
+            const ok = await transferLogic(tx.id, tx.amt, tx.taxRate, authorization);
             if (ok) closeModal('pin-modal');
         } else {
-            showToast("PIN Incorreto", "error");
+            showToast(getPinFailureMessage(pinResult), "error");
+            const input = document.getElementById('confirm-pin-input');
+            if (input) input.value = '';
+            renderPinSecurity();
         }
     } catch (error) {
         logSystemFailure('confirmTransferPin', error, { userId: currentUser?.uid, receiverShortId: pendingTransaction?.id }).catch(() => {});
         showToast(toErrorMessage(error), 'error');
     } finally {
-        if (button) button.disabled = false;
+        renderPinSecurity();
     }
 });
 
@@ -2469,6 +2855,16 @@ function initStaticListeners() {
         });
     }
 
+    ['current-pin', 'new-pin', 'confirm-new-pin'].forEach((pinInputId) => {
+        const settingsPinInput = document.getElementById(pinInputId);
+        if (settingsPinInput && !settingsPinInput.dataset.bound) {
+            settingsPinInput.dataset.bound = '1';
+            settingsPinInput.addEventListener('input', () => {
+                settingsPinInput.value = settingsPinInput.value.replace(/\D/g, '').slice(0, 6);
+            });
+        }
+    });
+
     const welfareTargetInput = document.getElementById('welfare-target-id');
     if (welfareTargetInput && !welfareTargetInput.dataset.bound) {
         welfareTargetInput.dataset.bound = '1';
@@ -2481,5 +2877,3 @@ function initStaticListeners() {
 initStaticListeners();
 toggleAuth('login');
 updateTransferPreview();
-
-
