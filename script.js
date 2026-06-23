@@ -42,22 +42,7 @@ let currentPublicTaxHidden = false;
 let currentTotalTaxCollected = 0;
 let activeHistoryFilter = 'all';
 
-let unsubPaymentRequests = null;
-let currentPaymentRequests = [];
-let currentInflationLevel = 0;
-let currentAllUsers = [];
-let unsubAllUsers = null;
-let welfareAutoEnabled = false;
-let welfareAutoThreshold = 0;
-
-const MAX_PAYMENT_REQUESTS = 30;
-const INFLATION_PER_EMISSION_K = 0.5; // +0.5% inflation per R$1000 emitted
-const INFLATION_MAX = 10;
-
-// Defina aqui o UID Firebase Auth da conta Prefeitura. Deixe vazio para usar o app sem recursos municipais.
-const CITY_HALL_ID = "";
-const CITY_HALL_CONFIGURED = Boolean(CITY_HALL_ID);
-
+const CITY_HALL_ID = "vTFqk1ZX8NfwzuE4ZmJKXnfoI9r1";
 const QR_PREFIX = "GBANK";
 const LOAN_LIMIT = 5000;
 const LOAN_WINDOW_LIMIT = 5000;
@@ -123,9 +108,11 @@ async function checkPin(pin, pinSalt, pinHash) {
 }
 
 async function verifyAndMigratePin(user, candidatePin) {
-    if (await checkPin(candidatePin, user.pinSalt, user.pinHash)) return true;
-    if (typeof user.pin === 'string' && candidatePin === user.pin) {
-        const next = await makePinHash(candidatePin);
+    const cleanPin = String(candidatePin || '').trim();
+    if (await checkPin(cleanPin, user.pinSalt, user.pinHash)) return true;
+    const legacyPin = user.pin === undefined || user.pin === null ? '' : String(user.pin).trim();
+    if (/^\d{4,6}$/.test(legacyPin) && cleanPin === legacyPin) {
+        const next = await makePinHash(cleanPin);
         await updateDoc(doc(db, "users", user.uid), {
             pinHash: next.pinHash,
             pinSalt: next.pinSalt,
@@ -151,7 +138,7 @@ function hasGovernmentAccess(userData = currentUser) {
 
 function ensureAdmin() {
     if (!hasGovernmentAccess()) {
-        showToast("Acao restrita a prefeitura.", "error");
+        showToast("Acao restrita a Admin ou Prefeitura.", "error");
         return false;
     }
     return true;
@@ -199,7 +186,7 @@ function buildTransactionRecord(rawId, data) {
     const amount = Number(data.amount || 0);
     const tax = Number(data.tax || 0);
     const total = Number((data.total ?? (amount + tax)).toFixed(2));
-    const record = {
+    return {
         ...data,
         txId: formatTransactionId(rawId),
         amount,
@@ -209,8 +196,6 @@ function buildTransactionRecord(rawId, data) {
         status: data.status || 'concluida',
         timestamp: serverTimestamp()
     };
-    if (!record.note) delete record.note; // don't store empty notes
-    return record;
 }
 
 function getPasswordChangeLocalKey(uid = currentUser?.uid) {
@@ -277,15 +262,22 @@ function getPasswordPolicyErrors(password, context = {}) {
     if (/(.)\1{3,}/.test(value)) errors.push('Evite caracteres repetidos em sequência.');
 
     const emailLocal = normalizeEmail(context.email || currentUser?.email).split('@')[0] || '';
-    if (emailLocal.length >= 3 && lower.includes(emailLocal.toLowerCase())) errors.push('Não use partes do e-mail na senha.');
+    if (emailLocal.length >= 3 && lower.includes(emailLocal.toLowerCase())) {
+        errors.push('Não use partes do e-mail na senha.');
+    }
 
     const nameTokens = normalizeAccountName(context.name || currentUser?.name)
         .toLowerCase()
         .split(/\s+/)
         .filter((token) => token.length >= 3);
-    if (nameTokens.some((token) => lower.includes(token))) errors.push('Não use partes do nome na senha.');
+    if (nameTokens.some((token) => lower.includes(token))) {
+        errors.push('Não use partes do nome na senha.');
+    }
 
-    if (['password', 'senha123', 'glassbank', 'qwerty123'].includes(lower)) errors.push('Escolha uma senha menos previsível.');
+    if (['password', 'senha123', 'glassbank', 'qwerty123'].includes(lower)) {
+        errors.push('Escolha uma senha menos previsível.');
+    }
+
     return errors;
 }
 
@@ -293,49 +285,22 @@ function getPinPolicyError(pin) {
     const cleanPin = String(pin || '').trim();
     if (!/^\d{4,6}$/.test(cleanPin)) return 'PIN deve ter entre 4 e 6 dígitos.';
     if (WEAK_PINS.has(cleanPin) || /^(\d)\1+$/.test(cleanPin)) return 'Evite PINs óbvios ou com dígitos repetidos.';
+
     const digits = [...cleanPin].map((digit) => Number(digit));
     const ascending = digits.every((digit, index) => index === 0 || digit === digits[index - 1] + 1);
     const descending = digits.every((digit, index) => index === 0 || digit === digits[index - 1] - 1);
     if (ascending || descending) return 'Evite sequências numéricas no PIN.';
+
     return '';
 }
 
 function getPinLockRemainingMs(userData = currentUser) {
-    return Math.max(0, timestampToMillis(userData?.pinLockedUntil, 0) - Date.now());
+    const lockedUntilMs = timestampToMillis(userData?.pinLockedUntil, 0);
+    return Math.max(0, lockedUntilMs - Date.now());
 }
 
 function formatMinutesRemaining(ms) {
     return Math.max(1, Math.ceil(ms / (60 * 1000)));
-}
-
-function getCityHallUnavailableMessage() {
-    return 'Prefeitura não configurada. Defina CITY_HALL_ID no topo do script.js para habilitar recursos municipais.';
-}
-
-function requireCityHallConfigured() {
-    if (CITY_HALL_CONFIGURED) return true;
-    showToast(getCityHallUnavailableMessage(), 'error');
-    return false;
-}
-
-function getCityHallRef() {
-    return CITY_HALL_CONFIGURED ? doc(db, "users", CITY_HALL_ID) : null;
-}
-
-function resetMunicipalState() {
-    currentTaxRate = 0.02;
-    dailyRewardValue = 50;
-    currentTotalTaxCollected = 0;
-    currentInflationLevel = 0;
-    currentPublicTaxHidden = false;
-    welfareAutoEnabled = false;
-    welfareAutoThreshold = 0;
-    renderTaxVisibility(0, false);
-    renderInflationIndicator();
-    updateTransferPreview();
-    renderInvestmentPolls([]);
-    checkDailyRewardStatus();
-    fillText('city-hall-balance', 'Não configurada');
 }
 
 async function resetPinFailureState(uid = currentUser?.uid) {
@@ -346,18 +311,25 @@ async function resetPinFailureState(uid = currentUser?.uid) {
         lastFailedPinAt: null
     });
     if (currentUser?.uid === uid) {
-        currentUser = { ...currentUser, failedPinAttempts: 0, pinLockedUntil: null, lastFailedPinAt: null };
+        currentUser = {
+            ...currentUser,
+            failedPinAttempts: 0,
+            pinLockedUntil: null,
+            lastFailedPinAt: null
+        };
     }
 }
 
 async function recordFailedPinAttempt(uid = currentUser?.uid) {
     if (!uid) return { attempts: 0, remainingMs: 0 };
+
     let attempts = 0;
     let lockUntilMs = 0;
     await runTransaction(db, async (t) => {
         const userRef = doc(db, "users", uid);
         const userDoc = await t.get(userRef);
         if (!userDoc.exists()) throw new Error("Usuário não encontrado.");
+
         const data = userDoc.data();
         const existingLockMs = timestampToMillis(data.pinLockedUntil, 0);
         if (existingLockMs > Date.now()) {
@@ -365,39 +337,60 @@ async function recordFailedPinAttempt(uid = currentUser?.uid) {
             lockUntilMs = existingLockMs;
             return;
         }
-        const storedAttempts = existingLockMs > 0 && existingLockMs <= Date.now() ? 0 : Number(data.failedPinAttempts || 0);
+
+        const storedAttempts = existingLockMs > 0 && existingLockMs <= Date.now()
+            ? 0
+            : Number(data.failedPinAttempts || 0);
         attempts = storedAttempts + 1;
         const update = {
             failedPinAttempts: attempts,
             lastFailedPinAt: serverTimestamp(),
             pinLockedUntil: null
         };
+
         if (attempts >= PIN_MAX_FAILED_ATTEMPTS) {
             lockUntilMs = Date.now() + (PIN_LOCK_MINUTES * 60 * 1000);
             update.pinLockedUntil = new Date(lockUntilMs);
         }
+
         t.update(userRef, update);
     });
+
     if (currentUser?.uid === uid) {
-        currentUser = { ...currentUser, failedPinAttempts: attempts, pinLockedUntil: lockUntilMs ? new Date(lockUntilMs) : null };
+        currentUser = {
+            ...currentUser,
+            failedPinAttempts: attempts,
+            pinLockedUntil: lockUntilMs ? new Date(lockUntilMs) : null
+        };
     }
+
     return { attempts, remainingMs: Math.max(0, lockUntilMs - Date.now()) };
 }
 
 function getPinFailureMessage(result) {
-    if (result?.remainingMs > 0) return `PIN bloqueado por ${formatMinutesRemaining(result.remainingMs)} min.`;
+    if (result?.remainingMs > 0) {
+        return `PIN bloqueado por ${formatMinutesRemaining(result.remainingMs)} min.`;
+    }
     const attemptsLeft = Math.max(0, PIN_MAX_FAILED_ATTEMPTS - Number(result?.attempts || 0));
-    return attemptsLeft > 0 ? `PIN incorreto. Tentativas restantes: ${attemptsLeft}.` : 'PIN incorreto.';
+    return attemptsLeft > 0
+        ? `PIN incorreto. Tentativas restantes: ${attemptsLeft}.`
+        : 'PIN incorreto.';
 }
 
 async function verifyPinWithRateLimit(user, candidatePin) {
     const remainingMs = getPinLockRemainingMs(user);
-    if (remainingMs > 0) return { ok: false, remainingMs, attempts: Number(user?.failedPinAttempts || 0) };
+    if (remainingMs > 0) {
+        return { ok: false, remainingMs, attempts: Number(user?.failedPinAttempts || 0) };
+    }
+
     const ok = await verifyAndMigratePin(user, candidatePin);
     if (ok) {
-        if (Number(user?.failedPinAttempts || 0) > 0 || user?.pinLockedUntil) await resetPinFailureState(user.uid);
+        if (Number(user?.failedPinAttempts || 0) > 0 || user?.pinLockedUntil) {
+            await resetPinFailureState(user.uid);
+        }
         return { ok: true, attempts: 0, remainingMs: 0 };
     }
+
     return { ok: false, ...(await recordFailedPinAttempt(user.uid)) };
 }
 
@@ -406,25 +399,21 @@ function createPinAuthorization(transaction) {
         uid: currentUser?.uid || '',
         id: String(transaction?.id || '').toUpperCase(),
         amount: Number(transaction?.amt),
+        taxRate: Number(transaction?.taxRate),
         expiresAt: Date.now() + PIN_AUTH_WINDOW_MS,
         nonce: randomHex(8)
     };
     return activePinAuthorization;
 }
 
-function isPinAuthorizationValid(authorization, receiverShortId, amount) {
-    return Boolean(
-        authorization
-        && authorization === activePinAuthorization
-        && authorization.uid === currentUser?.uid
-        && authorization.expiresAt >= Date.now()
-        && authorization.id === receiverShortId
-        && Math.abs(Number(authorization.amount) - Number(amount)) <= 0.000001
-    );
-}
-
-function setElementTextContent(el, text) {
-    if (el) el.textContent = text;
+function isPinAuthorizationValid(authorization, receiverShortId, amount, expectedTaxRate) {
+    if (!authorization || authorization !== activePinAuthorization) return false;
+    if (authorization.uid !== currentUser?.uid) return false;
+    if (authorization.expiresAt < Date.now()) return false;
+    if (authorization.id !== receiverShortId) return false;
+    if (Math.abs(Number(authorization.amount) - Number(amount)) > 0.000001) return false;
+    if (expectedTaxRate !== null && Math.abs(Number(authorization.taxRate) - Number(expectedTaxRate)) > 0.000001) return false;
+    return true;
 }
 
 function canReceiveWelfare(userData = currentUser) {
@@ -605,25 +594,43 @@ function renderPasswordSecurity() {
 }
 
 function renderPinSecurity() {
-    const statusEl = document.getElementById('confirm-pin-status');
-    const button = document.getElementById('confirm-pin-btn');
+    const statusEl = document.getElementById('pin-security-status');
+    const confirmStatusEl = document.getElementById('confirm-pin-status');
+    const changeButton = document.getElementById('change-pin-btn');
+    const confirmButton = document.getElementById('confirm-pin-btn');
     const remainingMs = getPinLockRemainingMs(currentUser);
+    const attempts = Number(currentUser?.failedPinAttempts || 0);
+
     if (remainingMs > 0) {
-        if (statusEl) statusEl.innerText = `PIN bloqueado por ${formatMinutesRemaining(remainingMs)} min.`;
-        if (button) button.disabled = true;
+        const message = `PIN bloqueado por ${formatMinutesRemaining(remainingMs)} min após muitas tentativas.`;
+        if (statusEl) statusEl.innerText = message;
+        if (confirmStatusEl) confirmStatusEl.innerText = message;
+        if (changeButton) changeButton.disabled = true;
+        if (confirmButton) confirmButton.disabled = true;
         return;
     }
+
     if (statusEl) {
-        const attempts = Number(currentUser?.failedPinAttempts || 0);
-        statusEl.innerText = attempts > 0 ? `Tentativas falhas: ${attempts}/${PIN_MAX_FAILED_ATTEMPTS}.` : '';
+        statusEl.innerText = attempts > 0
+            ? `Tentativas falhas recentes: ${attempts}/${PIN_MAX_FAILED_ATTEMPTS}.`
+            : 'Seu PIN autoriza transferências.';
     }
-    if (button) button.disabled = false;
+    if (confirmStatusEl) confirmStatusEl.innerText = '';
+    if (changeButton) changeButton.disabled = false;
+    if (confirmButton) confirmButton.disabled = false;
 }
 
 function clearSettingsSecretInputs() {
-    ['current-password', 'new-password', 'confirm-new-password', 'current-pin', 'new-pin', 'confirm-new-pin'].forEach((fieldId) => {
-        const el = document.getElementById(fieldId);
-        if (el) el.value = '';
+    [
+        'current-password',
+        'new-password',
+        'confirm-new-password',
+        'current-pin',
+        'new-pin',
+        'confirm-new-pin'
+    ].forEach((inputId) => {
+        const input = document.getElementById(inputId);
+        if (input) input.value = '';
     });
 }
 
@@ -693,13 +700,9 @@ async function ensureUserDefaults(uid, data) {
     if (!('lastFailedPinAt' in data)) patch.lastFailedPinAt = null;
     if (!('lastPinChangeAt' in data)) patch.lastPinChangeAt = null;
     if (!('welfareEligible' in data)) patch.welfareEligible = true;
-    if (CITY_HALL_CONFIGURED && uid === CITY_HALL_ID) {
+    if (uid === CITY_HALL_ID) {
         if (!('hidePublicTaxTotal' in data)) patch.hidePublicTaxTotal = false;
         if (!Array.isArray(data.investmentPolls)) patch.investmentPolls = [];
-        if (!Number.isFinite(Number(data.inflationLevel))) patch.inflationLevel = 0;
-        if (!Number.isFinite(Number(data.totalEmitted))) patch.totalEmitted = 0;
-        if (!('welfareAutoEnabled' in data)) patch.welfareAutoEnabled = false;
-        if (!Number.isFinite(Number(data.welfareAutoThreshold))) patch.welfareAutoThreshold = 0;
     }
     if (Object.keys(patch).length) {
         await updateDoc(doc(db, "users", uid), patch);
@@ -721,15 +724,6 @@ function cleanupListeners() {
     unsubAdminTransactions = null;
     unsubAdminLogs = null;
     unsubRiskUsers = null;
-    if (unsubPaymentRequests) unsubPaymentRequests();
-    if (unsubAllUsers) unsubAllUsers();
-    unsubPaymentRequests = null;
-    unsubAllUsers = null;
-    currentPaymentRequests = [];
-    currentAllUsers = [];
-    currentInflationLevel = 0;
-    welfareAutoEnabled = false;
-    welfareAutoThreshold = 0;
     currentAdminTransactions = [];
     currentAdminLogs = [];
     currentRiskUsers = [];
@@ -783,46 +777,35 @@ function navTo(sectionId) {
     
     if (sectionId === 'qr-scan') startScanner();
     else stopScanner();
-
-    if (sectionId === 'pix-request') {
-        renderIncomingPaymentRequests();
-        renderOutgoingPaymentRequests();
-    }
-    if (sectionId === 'admin-panel') {
-        renderWelfarePanel();
-    }
 }
 window.navTo = navTo;
 
 function closeModal(id) {
     const modal = document.getElementById(id);
     if (modal) modal.classList.add('hidden');
-    if (id === 'pin-modal') {
-        // Also close confirm modal
-        const confirmModal = document.getElementById('transfer-confirm-modal');
-        if (confirmModal) confirmModal.classList.add('hidden');
+    if (id === 'pin-modal' || id === 'transfer-confirm-modal') {
         pendingTransaction = null;
         activePinAuthorization = null;
-        pendingPaymentRequestId = null;
         const pinInput = document.getElementById('confirm-pin-input');
         if (pinInput) pinInput.value = '';
-        const pinBtn = document.getElementById('confirm-pin-btn');
-        if (pinBtn) { pinBtn.disabled = false; pinBtn.innerText = 'Confirmar'; }
-    }
-    if (id === 'transfer-confirm-modal') {
-        pendingTransaction = null;
-        activePinAuthorization = null;
     }
     if (id === 'settings-modal') {
-        // Clear settings fields on close
-        ['settings-new-name'].forEach((fieldId) => {
-            const el = document.getElementById(fieldId);
-            if (el) el.value = '';
-        });
         clearSettingsSecretInputs();
     }
 }
 window.closeModal = closeModal;
+
+function openSettingsModal() {
+    if (!currentUser) return;
+    const modal = document.getElementById('settings-modal');
+    const nameInput = document.getElementById('settings-new-name');
+    if (nameInput) nameInput.value = currentUser.name || '';
+    clearSettingsSecretInputs();
+    renderPasswordSecurity();
+    renderPinSecurity();
+    if (modal) modal.classList.remove('hidden');
+}
+window.openSettingsModal = openSettingsModal;
 
 function toggleAuth(mode) {
     const isReg = mode === 'register';
@@ -908,6 +891,7 @@ window.requestPasswordReset = async () => {
         emailInput?.focus();
         return;
     }
+
     const button = document.getElementById('forgot-password-btn');
     if (button) button.disabled = true;
     try {
@@ -957,7 +941,7 @@ function initializeUser(uid) {
         const balance = Number(currentUser.balance || 0);
 
         document.getElementById('user-name').innerText = userName;
-        document.getElementById('user-role').innerText = role === 'admin' ? 'Prefeitura' : role === 'merchant' ? 'Comércio' : 'Cidadão';
+        document.getElementById('user-role').innerText = currentUser.uid === CITY_HALL_ID ? 'Prefeitura' : role === 'admin' ? 'Admin' : role === 'merchant' ? 'Comércio' : 'Cidadão';
         document.getElementById('user-balance').innerText = formatMoney(balance);
         document.getElementById('user-short-id').innerText = currentUser.shortId || '---';
         document.getElementById('user-avatar').src = `https://ui-avatars.com/api/?name=${encodeURIComponent(userName)}&background=random&color=fff`;
@@ -977,15 +961,10 @@ function initializeUser(uid) {
         renderPasswordSecurity();
         renderPinSecurity();
 
-        if (currentUser.shortId) {
-            listenPaymentRequests(currentUser.shortId);
-        }
-
         if (hasGovernmentAccess()) {
             document.getElementById('admin-btn').classList.remove('hidden');
             initAdminPanel();
             initAdminMonitor();
-            initWelfarePanel();
         } else {
             document.getElementById('admin-btn').classList.add('hidden');
             if (unsubAdminTransactions) unsubAdminTransactions();
@@ -1109,23 +1088,14 @@ async function processInterests(uid) {
 function syncSystemData() {
     if (unsubCity) unsubCity();
     if (unsubPolls) unsubPolls();
-    unsubCity = null;
     unsubPolls = null;
 
-    if (!CITY_HALL_CONFIGURED) {
-        resetMunicipalState();
-        return;
-    }
-
-    unsubCity = onSnapshot(getCityHallRef(), (snap) => {
+    unsubCity = onSnapshot(doc(db, "users", CITY_HALL_ID), (snap) => {
         if (!snap.exists()) return;
         const data = snap.data();
         currentTaxRate = Number(data.customTax || 0.02);
         dailyRewardValue = Number(data.dailyRewardAmount || 50);
         currentTotalTaxCollected = Number(data.totalTaxCollected || 0);
-        currentInflationLevel = Number(data.inflationLevel || 0);
-        welfareAutoEnabled = Boolean(data.welfareAutoEnabled);
-        welfareAutoThreshold = Number(data.welfareAutoThreshold || 0);
 
         document.getElementById('city-hall-balance').innerText = formatMoney(data.balance || 0);
         renderTaxVisibility(currentTotalTaxCollected, Boolean(data.hidePublicTaxTotal));
@@ -1133,7 +1103,6 @@ function syncSystemData() {
         updateTransferPreview();
         renderInvestmentPolls(getStoredInvestmentPolls(data));
         checkDailyRewardStatus();
-        renderInflationIndicator();
 
         if (hasGovernmentAccess()) {
             updateSliderUI(currentTaxRate * 100);
@@ -1142,7 +1111,6 @@ function syncSystemData() {
                 rewardInput.value = dailyRewardValue.toFixed(2);
             }
             initAdminPanel();
-            initWelfarePanel();
         }
     });
 }
@@ -1160,9 +1128,11 @@ window.savingsAction = async (type) => {
             const userRef = doc(db, "users", currentUser.uid);
             const userDoc = await t.get(userRef);
             if (!userDoc.exists()) throw new Error("Usuário não encontrado.");
+
             const data = userDoc.data();
             const balance = Number(data.balance || 0);
             const savingsBalance = Number(data.savingsBalance || 0);
+
             if (type === 'deposit') {
                 if (balance < amount) throw new Error("Saldo insuficiente");
                 t.update(userRef, {
@@ -1234,9 +1204,11 @@ window.tradeStock = async (action) => {
             const userRef = doc(db, "users", currentUser.uid);
             const userDoc = await t.get(userRef);
             if (!userDoc.exists()) throw new Error("Usuário não encontrado.");
+
             const data = userDoc.data();
             const balance = Number(data.balance || 0);
             const stockCount = Number(data.stocks?.glasscoin || 0);
+
             if(action === 'buy') {
                 if(balance < price) throw new Error("Saldo insuficiente");
                 t.update(userRef, {
@@ -1272,11 +1244,7 @@ function checkDailyRewardStatus() {
     const eligible = canReceiveWelfare(currentUser);
 
     area.classList.remove('hidden');
-    if (!CITY_HALL_CONFIGURED) {
-        button.disabled = true;
-        button.innerText = 'Indisponível';
-        statusEl.innerText = 'Auxilio indisponivel ate configurar a Prefeitura.';
-    } else if (!eligible) {
+    if (!eligible) {
         button.disabled = true;
         button.innerText = 'Bloqueado';
         statusEl.innerText = 'Auxilio bloqueado para esta conta pela prefeitura.';
@@ -1293,10 +1261,9 @@ function checkDailyRewardStatus() {
 
 window.claimDailyReward = async () => {
     if (!currentUser) return;
-    if (!requireCityHallConfigured()) return;
     try {
         await runTransaction(db, async (t) => {
-            const cityRef = getCityHallRef();
+            const cityRef = doc(db, "users", CITY_HALL_ID);
             const userRef = doc(db, "users", currentUser.uid);
             
             const cityDoc = await t.get(cityRef);
@@ -1568,20 +1535,6 @@ function buildNotificationsFromTransactions() {
                 date: executedAt
             });
         }
-
-        if (transaction.type === 'fine') {
-            if (receiverIsCurrent) {
-                items.push({
-                    id: `${transaction.id}:fine`,
-                    transactionId: transaction.id,
-                    type: 'multa',
-                    title: 'Multa aplicada',
-                    description: transaction.note ? `Motivo: ${transaction.note}` : 'Multa administrativa municipal',
-                    amount: Number(transaction.amount || 0),
-                    date: executedAt
-                });
-            }
-        }
     });
 
     return items
@@ -1624,41 +1577,20 @@ function renderNotifications() {
     }
 
     currentNotifications.forEach((notification) => {
-        const isFine = notification.type === 'multa';
-        const isReceived = notification.type === 'recebido';
         const card = document.createElement('div');
-        let cardClass = `notification-card ${readIds.has(notification.id) ? '' : 'unread'}`.trim();
-        card.className = cardClass;
-        if (isFine) {
-            card.style.cssText = 'border-color:rgba(255,77,106,0.35); background:rgba(255,77,106,0.06);';
-        }
+        card.className = `notification-card ${readIds.has(notification.id) ? '' : 'unread'}`.trim();
 
         const copy = document.createElement('div');
         copy.className = 'notification-copy';
 
-        const typeIconMap = {
-            recebido: '↓',
-            enviado: '↑',
-            imposto: '🏛',
-            juros: '📈',
-            poupanca: '🌱',
-            emprestimo: '💰',
-            multa: '⚖️'
-        };
-        const icon = typeIconMap[notification.type] || '•';
-
         const title = document.createElement('strong');
-        title.innerText = `${icon} ${notification.title}`;
-        if (isFine) title.style.color = 'var(--red)';
-        if (isReceived) title.style.color = 'var(--green)';
+        title.innerText = notification.title;
 
         const description = document.createElement('small');
         description.innerText = `${notification.description} • ${formatMoney(notification.amount)}`;
 
         const meta = document.createElement('small');
-        const typeLabel = isFine ? 'MULTA' : notification.type.toUpperCase();
-        meta.innerText = `${typeLabel} • ${formatDateTime(notification.date)}`;
-        if (isFine) meta.style.color = 'rgba(255,77,106,0.7)';
+        meta.innerText = `${notification.type.toUpperCase()} • ${formatDateTime(notification.date)}`;
 
         copy.appendChild(title);
         copy.appendChild(description);
@@ -1814,8 +1746,7 @@ function openTransactionDetails(transaction) {
         receiverId: transaction.receiverShortId || (transaction.receiverId === currentUser?.uid ? currentUser.shortId : transaction.receiverId) || '-',
         amount: Number(transaction.amount || 0),
         tax: Number(transaction.tax || 0),
-        total: Number(transaction.total || (Number(transaction.amount || 0) + Number(transaction.tax || 0))),
-        note: transaction.note || ''
+        total: Number(transaction.total || (Number(transaction.amount || 0) + Number(transaction.tax || 0)))
     }).catch((error) => {
         logSystemFailure('openTransactionDetails', error, { transactionId: transaction.id }).catch(() => {});
         showToast(toErrorMessage(error), 'error');
@@ -1873,7 +1804,6 @@ function initAdminPanel() {
 
 window.updateGlobalTax = async () => {
     if (!ensureAdmin()) return;
-    if (!requireCityHallConfigured()) return;
     if (!slider) return;
     const val = Number.parseFloat(slider.value) / 100;
     if (!Number.isFinite(val) || val < 0 || val > 0.15) {
@@ -1882,7 +1812,7 @@ window.updateGlobalTax = async () => {
     }
 
     try {
-        await updateDoc(getCityHallRef(), { customTax: val });
+        await updateDoc(doc(db, "users", CITY_HALL_ID), { customTax: val });
         showToast("Taxa Atualizada!");
     } catch (e) {
         logSystemFailure('updateGlobalTax', e, { userId: currentUser?.uid, value: val }).catch(() => {});
@@ -1892,7 +1822,6 @@ window.updateGlobalTax = async () => {
 
 window.updateDailyReward = async () => {
     if (!ensureAdmin()) return;
-    if (!requireCityHallConfigured()) return;
     const rewardInput = document.getElementById('admin-daily-reward');
     if (!rewardInput) return;
     const amount = toNumber(rewardInput.value);
@@ -1902,7 +1831,7 @@ window.updateDailyReward = async () => {
     }
 
     try {
-        await updateDoc(getCityHallRef(), { dailyRewardAmount: amount });
+        await updateDoc(doc(db, "users", CITY_HALL_ID), { dailyRewardAmount: amount });
         showToast("Auxílio diário atualizado!");
     } catch (e) {
         logSystemFailure('updateDailyReward', e, { userId: currentUser?.uid, amount }).catch(() => {});
@@ -1912,10 +1841,9 @@ window.updateDailyReward = async () => {
 
 window.togglePublicTaxVisibility = async () => {
     if (!ensureAdmin()) return;
-    if (!requireCityHallConfigured()) return;
 
     try {
-        await updateDoc(getCityHallRef(), {
+        await updateDoc(doc(db, "users", CITY_HALL_ID), {
             hidePublicTaxTotal: !currentPublicTaxHidden
         });
         showToast(currentPublicTaxHidden ? "Total publico visivel novamente." : "Total publico ocultado.");
@@ -1974,12 +1902,6 @@ window.changeAccountName = async () => {
     try {
         await updateDoc(doc(db, "users", currentUser.uid), { name: newName });
         input.value = '';
-        // Update DOM immediately (onSnapshot will also sync)
-        const nameEl = document.getElementById('user-name');
-        if (nameEl) nameEl.innerText = newName;
-        const avatarEl = document.getElementById('user-avatar');
-        if (avatarEl) avatarEl.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(newName)}&background=random&color=fff`;
-        if (currentUser) currentUser.name = newName;
         showToast('Nome atualizado com sucesso!');
         closeModal('settings-modal');
     } catch (e) {
@@ -2051,8 +1973,6 @@ window.changeAccountPassword = async () => {
         clearSettingsSecretInputs();
         renderPasswordSecurity();
         showToast('Senha atualizada com sucesso.');
-        // Auto-close settings modal after success
-        setTimeout(() => closeModal('settings-modal'), 800);
     } catch (error) {
         logSystemFailure('changeAccountPassword', error, { userId: currentUser?.uid }).catch(() => {});
         showToast(toErrorMessage(error), 'error');
@@ -2063,6 +1983,7 @@ window.changeAccountPassword = async () => {
 
 window.changeAccountPin = async () => {
     if (!currentUser) return;
+
     const currentPinInput = document.getElementById('current-pin');
     const newPinInput = document.getElementById('new-pin');
     const confirmPinInput = document.getElementById('confirm-new-pin');
@@ -2076,25 +1997,31 @@ window.changeAccountPin = async () => {
 
     if (remainingMs > 0) {
         showToast(`PIN bloqueado. Aguarde ${formatMinutesRemaining(remainingMs)} min.`, 'error');
+        renderPinSecurity();
         return;
     }
+
     if (!currentPin || !newPin || !confirmPin) {
         showToast('Preencha PIN atual, novo PIN e confirmacao.', 'error');
         return;
     }
+
     if (!/^\d{4,6}$/.test(currentPin)) {
         showToast('PIN atual inválido.', 'error');
         return;
     }
+
     const pinError = getPinPolicyError(newPin);
     if (pinError) {
         showToast(pinError, 'error');
         return;
     }
+
     if (newPin !== confirmPin) {
         showToast('A confirmacao do novo PIN nao confere.', 'error');
         return;
     }
+
     if (newPin === currentPin) {
         showToast('O novo PIN precisa ser diferente do atual.', 'error');
         return;
@@ -2108,6 +2035,7 @@ window.changeAccountPin = async () => {
             renderPinSecurity();
             return;
         }
+
         const nextPin = await makePinHash(newPin);
         await updateDoc(doc(db, "users", currentUser.uid), {
             pinHash: nextPin.pinHash,
@@ -2118,6 +2046,7 @@ window.changeAccountPin = async () => {
             lastFailedPinAt: null,
             lastPinChangeAt: serverTimestamp()
         });
+
         currentUser = {
             ...currentUser,
             pinHash: nextPin.pinHash,
@@ -2134,14 +2063,12 @@ window.changeAccountPin = async () => {
         logSystemFailure('changeAccountPin', error, { userId: currentUser?.uid }).catch(() => {});
         showToast(toErrorMessage(error), 'error');
     } finally {
-        button.disabled = false;
         renderPinSecurity();
     }
 };
 
 window.createPoll = async () => {
     if (!ensureAdmin()) return;
-    if (!requireCityHallConfigured()) return;
     const title = document.getElementById('poll-title').value.trim();
     const cost = toNumber(document.getElementById('poll-cost').value);
     const target = Number.parseInt(document.getElementById('poll-target').value, 10);
@@ -2161,7 +2088,7 @@ window.createPoll = async () => {
 
     try {
         await runTransaction(db, async (t) => {
-            const cityRef = getCityHallRef();
+            const cityRef = doc(db, "users", CITY_HALL_ID);
             const cityDoc = await t.get(cityRef);
             if (!cityDoc.exists()) throw new Error("Prefeitura nao encontrada.");
 
@@ -2195,9 +2122,8 @@ window.createPoll = async () => {
 
 window.votePoll = async (pollId) => {
     if (!currentUser) return;
-    if (!requireCityHallConfigured()) return;
 
-    const cityRef = getCityHallRef();
+    const cityRef = doc(db, "users", CITY_HALL_ID);
     try {
         let voteMessage = "Voto computado!";
         await runTransaction(db, async (t) => {
@@ -2267,10 +2193,9 @@ window.votePoll = async (pollId) => {
 };
 
 window.deletePoll = async (pollId) => {
-    if (!hasGovernmentAccess()) { showToast('Ação restrita à prefeitura.', 'error'); return; }
-    if (!requireCityHallConfigured()) return;
+    if (!hasGovernmentAccess()) { showToast('Ação restrita a Admin ou Prefeitura.', 'error'); return; }
     if (!confirm('Remover esta enquete? Esta ação não pode ser desfeita.')) return;
-    const cityRef = getCityHallRef();
+    const cityRef = doc(db, "users", CITY_HALL_ID);
     try {
         await runTransaction(db, async (t) => {
             const cityDoc = await t.get(cityRef);
@@ -2553,21 +2478,10 @@ async function showTransferReceipt(data) {
     fillText('rcpt-receiver-id', data.receiverId || '-');
     fillText('rcpt-auth', authCode);
 
-    const noteRow = document.getElementById('rcpt-note-row');
-    const noteEl = document.getElementById('rcpt-note');
-    if (noteRow && noteEl) {
-        if (data.note) {
-            noteEl.innerText = data.note;
-            noteRow.classList.remove('hidden');
-        } else {
-            noteRow.classList.add('hidden');
-        }
-    }
-
     modal.classList.remove('hidden');
 }
 
-async function transferLogic(shortId, amount, pinAuthorization = null) {
+async function transferLogic(shortId, amount, expectedTaxRate = null, pinAuthorization = null) {
     if (!currentUser) return false;
 
     const receiverShortId = String(shortId || '').toUpperCase().trim();
@@ -2581,7 +2495,7 @@ async function transferLogic(shortId, amount, pinAuthorization = null) {
         showToast("Valor inválido.", "error");
         return false;
     }
-    if (!isPinAuthorizationValid(pinAuthorization, receiverShortId, transferAmount)) {
+    if (!isPinAuthorizationValid(pinAuthorization, receiverShortId, transferAmount, expectedTaxRate)) {
         showToast("Confirme a operação com seu PIN antes de transferir.", "error");
         return false;
     }
@@ -2604,15 +2518,18 @@ async function transferLogic(shortId, amount, pinAuthorization = null) {
         await runTransaction(db, async (t) => {
             const senderRef = doc(db, "users", currentUser.uid);
             const receiverRef = doc(db, "users", receiverUid);
-            const cityRef = getCityHallRef();
+            const cityRef = doc(db, "users", CITY_HALL_ID);
 
             const sDoc = await t.get(senderRef);
             const rDoc = await t.get(receiverRef);
-            const cDoc = cityRef ? await t.get(cityRef) : null;
+            const cDoc = await t.get(cityRef);
             if (!sDoc.exists() || !rDoc.exists()) throw new Error("Conta não encontrada.");
 
             receiverName = rDoc.data().name || 'Destinatário';
-            const taxRate = cDoc?.exists() ? Number(cDoc.data().customTax || 0.02) : currentTaxRate;
+            const taxRate = cDoc.exists() ? Number(cDoc.data().customTax || 0.02) : 0.02;
+            if (expectedTaxRate !== null && Math.abs(taxRate - Number(expectedTaxRate)) > 0.000001) {
+                throw new Error("A taxa municipal mudou. Revise a transferência antes de confirmar.");
+            }
             const tax = Number((transferAmount * taxRate).toFixed(2));
             const total = Number((transferAmount + tax).toFixed(2));
             receiptTax = tax;
@@ -2623,7 +2540,7 @@ async function transferLogic(shortId, amount, pinAuthorization = null) {
 
             t.update(senderRef, { balance: increment(-total) });
             t.update(receiverRef, { balance: increment(transferAmount) });
-            if (cityRef && cDoc?.exists()) {
+            if (cDoc.exists()) {
                 t.update(cityRef, {
                     balance: increment(tax),
                     totalTaxCollected: increment(tax)
@@ -2632,8 +2549,6 @@ async function transferLogic(shortId, amount, pinAuthorization = null) {
 
             const txRef = doc(collection(db, "transactions"));
             receiptTxId = formatTransactionId(txRef.id);
-            const noteInput = document.getElementById('transfer-note');
-            const noteValue = noteInput ? noteInput.value.trim().slice(0, 100) : '';
             t.set(txRef, buildTransactionRecord(txRef.id, {
                 senderId: currentUser.uid,
                 senderName: currentUser.name,
@@ -2644,7 +2559,6 @@ async function transferLogic(shortId, amount, pinAuthorization = null) {
                 amount: transferAmount,
                 tax,
                 total,
-                note: noteValue || undefined,
                 type: 'transfer',
                 method: 'Pix',
                 participants: [currentUser.uid, receiverUid]
@@ -2658,8 +2572,6 @@ async function transferLogic(shortId, amount, pinAuthorization = null) {
         }
         showToast("Transferência realizada!");
         navTo('dashboard');
-        const noteInputEl = document.getElementById('transfer-note');
-        const noteForReceipt = noteInputEl ? noteInputEl.value.trim() : '';
         document.getElementById('transfer-form').reset();
         updateTransferPreview();
         await showTransferReceipt({
@@ -2675,8 +2587,7 @@ async function transferLogic(shortId, amount, pinAuthorization = null) {
             receiverId: receiverShortId,
             amount: transferAmount,
             tax: receiptTax,
-            total: receiptTotal,
-            note: noteForReceipt
+            total: receiptTotal
         });
         return true;
     } catch (e) {
@@ -2694,6 +2605,8 @@ document.getElementById('transfer-form').addEventListener('submit', async (e) =>
     e.preventDefault();
     const id = document.getElementById('dest-id').value.toUpperCase().trim();
     const amt = toNumber(document.getElementById('amount').value);
+    const submitButton = e.submitter || document.querySelector('#transfer-form button[type="submit"]');
+    if (!currentUser) return showToast("Entre na conta para transferir.", "error");
     if (!/^[A-Z0-9]{6}$/.test(id)) return showToast("ID do destinatário inválido.", "error");
     if (!Number.isFinite(amt) || amt <= 0) return showToast("Valor inválido.", "error");
     if (id === currentUser?.shortId) return showToast("Você não pode transferir para si mesmo.", "error");
@@ -2701,39 +2614,55 @@ document.getElementById('transfer-form').addEventListener('submit', async (e) =>
     const tax = Number((amt * currentTaxRate).toFixed(2));
     const total = Number((amt + tax).toFixed(2));
     const balanceAfter = Number(((currentUser?.balance || 0) - total).toFixed(2));
+    if (balanceAfter < 0) return showToast("Saldo insuficiente para cobrir valor e imposto.", "error");
 
-    // Populate confirmation modal
-    const el = (selector) => document.getElementById(selector);
-    if (el('confirm-dest-id'))    el('confirm-dest-id').innerText    = id;
-    if (el('confirm-amount'))     el('confirm-amount').innerText     = formatMoney(amt);
-    if (el('confirm-tax'))        el('confirm-tax').innerText        = formatMoney(tax);
-    if (el('confirm-total'))      el('confirm-total').innerText      = formatMoney(total);
-    if (el('confirm-balance-after')) {
-        el('confirm-balance-after').innerText = formatMoney(balanceAfter);
-        el('confirm-balance-after').style.color = balanceAfter < 0 ? 'var(--red)' : 'var(--green)';
+    if (submitButton) submitButton.disabled = true;
+    try {
+        const receiverSnap = await getDocs(query(collection(db, "users"), where("shortId", "==", id), limit(2)));
+        if (receiverSnap.empty) throw new Error("Destinatário não encontrado.");
+        if (receiverSnap.size > 1) throw new Error("ID do destinatário duplicado. Contate o suporte.");
+        if (receiverSnap.docs[0].id === currentUser.uid) throw new Error("Você não pode transferir para si mesmo.");
+
+        const receiverData = receiverSnap.docs[0].data();
+        const receiverName = receiverData.name || 'Destinatário';
+        const el = (selector) => document.getElementById(selector);
+        if (el('confirm-destination')) el('confirm-destination').innerText = `${receiverName} (${id})`;
+        if (el('confirm-amount')) el('confirm-amount').innerText = formatMoney(amt);
+        if (el('confirm-tax')) el('confirm-tax').innerText = formatMoney(tax);
+        if (el('confirm-total')) el('confirm-total').innerText = formatMoney(total);
+        if (el('confirm-balance-after')) {
+            el('confirm-balance-after').innerText = formatMoney(balanceAfter);
+            el('confirm-balance-after').style.color = balanceAfter < 0 ? 'var(--red)' : 'var(--green)';
+        }
+
+        pendingTransaction = { id, amt, taxRate: currentTaxRate };
+        el('transfer-confirm-modal')?.classList.remove('hidden');
+    } catch (error) {
+        logSystemFailure('prepareTransferConfirmation', error, { userId: currentUser?.uid, receiverShortId: id, amount: amt }).catch(() => {});
+        showToast(toErrorMessage(error), 'error');
+    } finally {
+        if (submitButton) submitButton.disabled = false;
     }
-
-    pendingTransaction = { id, amt };
-    el('transfer-confirm-modal')?.classList.remove('hidden');
 });
 
-document.getElementById('confirm-transfer-btn')?.addEventListener('click', () => {
+document.getElementById('confirm-transfer-btn').addEventListener('click', () => {
     if (!pendingTransaction) {
         showToast("Nenhuma transação pendente.", "error");
         return;
     }
+
     const remainingMs = getPinLockRemainingMs(currentUser);
     if (remainingMs > 0) {
         showToast(`PIN bloqueado. Aguarde ${formatMinutesRemaining(remainingMs)} min.`, "error");
         renderPinSecurity();
         return;
     }
+
     document.getElementById('transfer-confirm-modal')?.classList.add('hidden');
-    const pinModal = document.getElementById('pin-modal');
     const pinInput = document.getElementById('confirm-pin-input');
     if (pinInput) pinInput.value = '';
     renderPinSecurity();
-    pinModal?.classList.remove('hidden');
+    document.getElementById('pin-modal')?.classList.remove('hidden');
     setTimeout(() => pinInput?.focus(), 50);
 });
 
@@ -2743,35 +2672,28 @@ document.getElementById('confirm-pin-btn').addEventListener('click', async () =>
         return;
     }
 
-    const pinInputEl = document.getElementById('confirm-pin-input');
-    const pinVal = pinInputEl ? pinInputEl.value : '';
-    if (pinVal.length < 4) { showToast("PIN incompleto.", "error"); return; }
-
-    const btn = document.getElementById('confirm-pin-btn');
-    if (btn) { btn.disabled = true; btn.innerText = 'Verificando...'; }
-
+    const pinInput = document.getElementById('confirm-pin-input').value;
+    if (!/^\d{4,6}$/.test(pinInput)) { showToast("PIN deve ter entre 4 e 6 dígitos.", "error"); return; }
+    const button = document.getElementById('confirm-pin-btn');
+    if (button) button.disabled = true;
     try {
-        const pinResult = await verifyPinWithRateLimit(currentUser, pinVal);
+        const pinResult = await verifyPinWithRateLimit(currentUser, pinInput);
         if (pinResult.ok) {
-            const reqId = pendingPaymentRequestId;
-            const authorization = createPinAuthorization(pendingTransaction);
-            const ok = await transferLogic(pendingTransaction.id, pendingTransaction.amt, authorization);
-            if (ok) {
-                closeModal('pin-modal');
-                // Resolve the payment request that triggered this transfer (if any)
-                if (reqId) {
-                    resolvePaymentRequest(reqId, 'paid').catch(() => {});
-                    pendingPaymentRequestId = null;
-                }
-            }
+            const tx = { ...pendingTransaction };
+            const authorization = createPinAuthorization(tx);
+            const ok = await transferLogic(tx.id, tx.amt, tx.taxRate, authorization);
+            if (ok) closeModal('pin-modal');
         } else {
             showToast(getPinFailureMessage(pinResult), "error");
-            if (pinInputEl) pinInputEl.value = '';
+            const input = document.getElementById('confirm-pin-input');
+            if (input) input.value = '';
             renderPinSecurity();
         }
+    } catch (error) {
+        logSystemFailure('confirmTransferPin', error, { userId: currentUser?.uid, receiverShortId: pendingTransaction?.id }).catch(() => {});
+        showToast(toErrorMessage(error), 'error');
     } finally {
         renderPinSecurity();
-        if (btn) { btn.disabled = false; btn.innerText = 'Confirmar'; }
     }
 });
 
@@ -2810,17 +2732,14 @@ function renderHistory(filter) {
 
         const li = document.createElement('li');
         let icon = isSender ? 'arrow-up' : 'arrow-down';
-        let color = isSender ? 'var(--red)' : 'var(--green)';
+        let color = isSender ? '#ff416c' : '#00f260';
         let signal = isSender ? '-' : '+';
 
-        if (t.type === 'interest_loan' || t.type === 'interest_overdraft') { icon = 'fire'; color = 'var(--red)'; signal = '-'; }
-        if (t.type === 'interest_yield') { icon = 'leaf'; color = 'var(--gold)'; signal = '+'; }
-        if (t.type === 'welfare') { icon = 'gift'; color = 'var(--blue)'; signal = '+'; }
-        if (t.type === 'loan') { icon = 'hand-holding-usd'; color = 'var(--gold)'; signal = '+'; }
-        if (t.type === 'loan_payment') { icon = 'wallet'; color = 'var(--red)'; signal = '-'; }
-        if (t.type === 'fine') { icon = 'gavel'; color = 'var(--red)'; signal = '-'; }
-        if (t.type === 'emission') { icon = 'print'; color = 'var(--gold)'; signal = '+'; }
-        if (t.type === 'payment_request') { icon = 'hand-holding-usd'; color = isSender ? 'var(--red)' : 'var(--green)'; }
+        if (t.type === 'interest_loan' || t.type === 'interest_overdraft') { icon = 'fire'; color = '#e74c3c'; signal = '-'; }
+        if (t.type === 'interest_yield') { icon = 'leaf'; color = '#f1c40f'; signal = '+'; }
+        if (t.type === 'welfare') { icon = 'gift'; color = '#3498db'; signal = '+'; }
+        if (t.type === 'loan') { icon = 'hand-holding-usd'; color = '#f39c12'; signal = '+'; }
+        if (t.type === 'loan_payment') { icon = 'wallet'; color = '#ff9f43'; signal = '-'; }
 
         const title = t.type === 'transfer' ? (isSender ? t.receiverName : t.senderName) : (t.senderName || 'Sistema');
         const txType = String(t.type || 'transaction').toUpperCase();
@@ -2867,15 +2786,6 @@ function renderHistory(filter) {
             copy.appendChild(taxLine);
         }
 
-        if (t.note) {
-            const noteLine = document.createElement('small');
-            noteLine.className = 'history-tax';
-            noteLine.style.fontStyle = 'italic';
-            noteLine.style.opacity = '0.65';
-            noteLine.textContent = `"${t.note}"`;
-            copy.appendChild(noteLine);
-        }
-
         left.appendChild(iconEl);
         left.appendChild(copy);
 
@@ -2902,514 +2812,6 @@ function renderHistory(filter) {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════
-// MULTA ADMINISTRATIVA
-// ═══════════════════════════════════════════════════════════════
-window.applyAdminFine = async () => {
-    if (!ensureAdmin()) return;
-    if (!requireCityHallConfigured()) return;
-    const shortIdInput = document.getElementById('fine-target-id');
-    const amountInput  = document.getElementById('fine-amount');
-    const reasonInput  = document.getElementById('fine-reason');
-    if (!shortIdInput || !amountInput || !reasonInput) return;
-
-    const shortId = shortIdInput.value.trim().toUpperCase();
-    const amount  = toNumber(amountInput.value);
-    const reason  = reasonInput.value.trim();
-
-    if (!/^[A-Z0-9]{6}$/.test(shortId)) { showToast('ID inválido.', 'error'); return; }
-    if (!Number.isFinite(amount) || amount <= 0) { showToast('Valor inválido.', 'error'); return; }
-    if (!reason) { showToast('Informe o motivo da multa.', 'error'); return; }
-
-    try {
-        const matches = await getDocs(query(collection(db, "users"), where("shortId", "==", shortId), limit(1)));
-        if (matches.empty) throw new Error("Conta não encontrada.");
-        const targetDoc = matches.docs[0];
-        const targetData = targetDoc.data();
-        if (targetDoc.id === CITY_HALL_ID) throw new Error("Não é possível multar a prefeitura.");
-
-        await runTransaction(db, async (t) => {
-            const targetRef = doc(db, "users", targetDoc.id);
-            const cityRef   = getCityHallRef();
-            const tDoc = await t.get(targetRef);
-            const cityDoc = await t.get(cityRef);
-            if (!tDoc.exists()) throw new Error("Conta não encontrada.");
-            if (!cityDoc.exists()) throw new Error("Prefeitura não encontrada.");
-
-            t.update(targetRef, { balance: increment(-amount) });
-            t.update(cityRef, { balance: increment(amount), totalFinesCollected: increment(amount) });
-
-            const txRef = doc(collection(db, "transactions"));
-            t.set(txRef, buildTransactionRecord(txRef.id, {
-                senderId: targetDoc.id,
-                senderName: targetData.name || shortId,
-                senderShortId: shortId,
-                receiverId: CITY_HALL_ID,
-                receiverName: 'Prefeitura',
-                receiverShortId: 'CITY',
-                amount,
-                note: reason,
-                type: 'fine',
-                method: 'Multa',
-                participants: [targetDoc.id, CITY_HALL_ID]
-            }));
-        });
-
-        shortIdInput.value = '';
-        amountInput.value  = '';
-        reasonInput.value  = '';
-        showToast(`Multa de ${formatMoney(amount)} aplicada a ${targetData.name || shortId}.`);
-    } catch (e) {
-        logSystemFailure('applyAdminFine', e, { userId: currentUser?.uid, targetShortId: shortId }).catch(() => {});
-        showToast(toErrorMessage(e), 'error');
-    }
-};
-
-// ═══════════════════════════════════════════════════════════════
-// EMISSÃO DE MOEDA CONTROLADA
-// ═══════════════════════════════════════════════════════════════
-function renderInflationIndicator() {
-    const lvl  = Math.min(Math.max(currentInflationLevel, 0), INFLATION_MAX);
-    const pct  = (lvl / INFLATION_MAX) * 100;
-    const color = lvl < 3 ? 'var(--green)' : lvl < 6 ? 'var(--gold)' : 'var(--red)';
-    const label = lvl < 2 ? 'Estável' : lvl < 4 ? 'Moderada' : lvl < 7 ? 'Alta' : 'Crítica';
-    const textContent = `${lvl.toFixed(1)}% — ${label}`;
-
-    // Transparency section
-    const bar  = document.getElementById('inflation-bar');
-    const text = document.getElementById('inflation-text');
-    if (bar)  { bar.style.width = `${pct}%`; bar.style.background = color; }
-    if (text) { text.innerText = textContent; text.style.color = color; }
-
-    // Admin panel
-    const barAdmin  = document.getElementById('inflation-bar-admin');
-    const textAdmin = document.getElementById('inflation-text-admin');
-    if (barAdmin)  { barAdmin.style.width = `${pct}%`; barAdmin.style.background = color; }
-    if (textAdmin) { textAdmin.innerText = textContent; textAdmin.style.color = color; }
-}
-
-window.emitCurrency = async () => {
-    if (!ensureAdmin()) return;
-    if (!requireCityHallConfigured()) return;
-    const amountInput = document.getElementById('emission-amount');
-    if (!amountInput) return;
-    const amount = toNumber(amountInput.value);
-    if (!Number.isFinite(amount) || amount <= 0) { showToast('Informe um valor válido.', 'error'); return; }
-    if (amount > 100000) { showToast('Emissão máxima por operação: R$ 100.000.', 'error'); return; }
-
-    const inflationIncrease = (amount / 1000) * INFLATION_PER_EMISSION_K;
-    const newInflation = Math.min(currentInflationLevel + inflationIncrease, INFLATION_MAX);
-
-    try {
-        await runTransaction(db, async (t) => {
-            const cityRef = getCityHallRef();
-            const cityDoc = await t.get(cityRef);
-            if (!cityDoc.exists()) throw new Error("Prefeitura não encontrada.");
-
-            t.update(cityRef, {
-                balance: increment(amount),
-                inflationLevel: newInflation,
-                totalEmitted: increment(amount)
-            });
-
-            const txRef = doc(collection(db, "transactions"));
-            t.set(txRef, buildTransactionRecord(txRef.id, {
-                senderId: 'SYSTEM',
-                senderName: 'Banco Central',
-                senderShortId: 'BCB',
-                receiverId: CITY_HALL_ID,
-                receiverName: 'Prefeitura',
-                receiverShortId: 'CITY',
-                amount,
-                type: 'emission',
-                method: 'Emissão',
-                participants: [CITY_HALL_ID]
-            }));
-        });
-
-        amountInput.value = '';
-        showToast(`R$ ${formatMoney(amount)} emitidos. Inflação: ${newInflation.toFixed(1)}%`);
-    } catch (e) {
-        logSystemFailure('emitCurrency', e, { userId: currentUser?.uid, amount }).catch(() => {});
-        showToast(toErrorMessage(e), 'error');
-    }
-};
-
-// ═══════════════════════════════════════════════════════════════
-// SOLICITAÇÃO DE PAGAMENTO (PAYMENT REQUEST)
-// ═══════════════════════════════════════════════════════════════
-function listenPaymentRequests(shortId) {
-    if (unsubPaymentRequests) unsubPaymentRequests();
-    const q = query(
-        collection(db, "paymentRequests"),
-        where("toShortId", "==", shortId),
-        where("status", "==", "pending"),
-        orderBy("createdAt", "desc"),
-        limit(MAX_PAYMENT_REQUESTS)
-    );
-    unsubPaymentRequests = onSnapshot(q, (snap) => {
-        currentPaymentRequests = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-        renderIncomingPaymentRequests();
-        updatePaymentRequestBadge();
-    }, () => {});
-}
-
-function updatePaymentRequestBadge() {
-    const badge = document.getElementById('pay-request-badge');
-    if (!badge) return;
-    badge.innerText = String(currentPaymentRequests.length);
-    badge.classList.toggle('hidden', currentPaymentRequests.length === 0);
-}
-
-function renderIncomingPaymentRequests() {
-    const list = document.getElementById('incoming-requests-list');
-    if (!list) return;
-    list.innerHTML = '';
-    if (!currentPaymentRequests.length) {
-        renderEmptyState(list, 'Nenhuma cobrança pendente.');
-        return;
-    }
-    currentPaymentRequests.forEach((req) => {
-        const card = document.createElement('div');
-        card.className = 'glass-card';
-        card.style.cssText = 'background:rgba(0,232,124,0.05); border-color:rgba(0,232,124,0.2); margin-bottom:8px;';
-
-        const from = document.createElement('div');
-        from.style.cssText = 'display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px;';
-
-        const info = document.createElement('div');
-        const name = document.createElement('strong');
-        name.style.fontSize = '0.9rem';
-        name.textContent = req.fromName || req.fromShortId || 'Conta';
-        const meta = document.createElement('small');
-        meta.style.color = 'var(--text-muted)';
-        meta.style.display = 'block';
-        meta.textContent = `ID: ${req.fromShortId || '-'} • ${formatDateTime(timestampToDate(req.createdAt, new Date()))}`;
-        info.appendChild(name);
-        info.appendChild(meta);
-        if (req.note) {
-            const note = document.createElement('small');
-            note.style.cssText = 'font-style:italic; color:var(--text-secondary); display:block;';
-            note.textContent = `"${String(req.note).slice(0, 100)}"`;
-            info.appendChild(note);
-        }
-
-        const amount = document.createElement('strong');
-        amount.style.cssText = 'font-family:Syne,sans-serif; font-size:1.1rem; color:var(--green);';
-        amount.innerText = formatMoney(req.amount);
-
-        from.appendChild(info);
-        from.appendChild(amount);
-
-        const btns = document.createElement('div');
-        btns.style.cssText = 'display:flex; gap:8px;';
-
-        const payBtn = document.createElement('button');
-        payBtn.style.cssText = 'flex:1; margin:0; padding:9px; font-size:0.82rem;';
-        payBtn.innerHTML = '<i class="fas fa-check" style="margin-right:4px;"></i>Pagar';
-        payBtn.addEventListener('click', () => {
-            const destInput = document.getElementById('dest-id');
-            const amtInput  = document.getElementById('amount');
-            if (destInput) destInput.value = req.fromShortId;
-            if (amtInput)  amtInput.value  = req.amount.toFixed(2);
-            pendingPaymentRequestId = req.id;
-            navTo('transfer');
-            updateTransferPreview();
-        });
-
-        const declineBtn = document.createElement('button');
-        declineBtn.className = 'secondary';
-        declineBtn.style.cssText = 'flex:1; margin:0; padding:9px; font-size:0.82rem;';
-        declineBtn.innerHTML = '<i class="fas fa-times" style="margin-right:4px;"></i>Recusar';
-        declineBtn.addEventListener('click', () => resolvePaymentRequest(req.id, 'declined'));
-
-        btns.appendChild(payBtn);
-        btns.appendChild(declineBtn);
-        card.appendChild(from);
-        card.appendChild(btns);
-        list.appendChild(card);
-    });
-}
-
-let pendingPaymentRequestId = null;
-
-window.sendPaymentRequest = async () => {
-    if (!currentUser) return;
-    const toInput     = document.getElementById('req-dest-id');
-    const amountInput = document.getElementById('req-amount');
-    const noteInput   = document.getElementById('req-note');
-    if (!toInput || !amountInput) return;
-
-    const toShortId = toInput.value.trim().toUpperCase();
-    const amount    = toNumber(amountInput.value);
-    const note      = noteInput ? noteInput.value.trim().slice(0, 100) : '';
-
-    if (!/^[A-Z0-9]{6}$/.test(toShortId)) { showToast('ID de destino inválido.', 'error'); return; }
-    if (toShortId === currentUser.shortId) { showToast('Você não pode cobrar a si mesmo.', 'error'); return; }
-    if (!Number.isFinite(amount) || amount <= 0) { showToast('Valor inválido.', 'error'); return; }
-
-    try {
-        const matches = await getDocs(query(collection(db, "users"), where("shortId", "==", toShortId), limit(1)));
-        if (matches.empty) throw new Error("Conta de destino não encontrada.");
-        const targetData = matches.docs[0].data();
-
-        await addDoc(collection(db, "paymentRequests"), {
-            fromId: currentUser.uid,
-            fromShortId: currentUser.shortId,
-            fromName: currentUser.name,
-            toUid: matches.docs[0].id,
-            toShortId,
-            toName: targetData.name || toShortId,
-            amount,
-            note: note || null,
-            status: 'pending',
-            createdAt: serverTimestamp()
-        });
-
-        toInput.value = '';
-        amountInput.value = '';
-        if (noteInput) noteInput.value = '';
-        showToast(`Cobrança de ${formatMoney(amount)} enviada para ${targetData.name || toShortId}!`);
-    } catch (e) {
-        logSystemFailure('sendPaymentRequest', e, { userId: currentUser?.uid, toShortId, amount }).catch(() => {});
-        showToast(toErrorMessage(e), 'error');
-    }
-};
-
-async function resolvePaymentRequest(requestId, action) {
-    try {
-        await updateDoc(doc(db, "paymentRequests", requestId), {
-            status: action,
-            resolvedAt: serverTimestamp()
-        });
-        if (action === 'declined') showToast('Cobrança recusada.');
-        pendingPaymentRequestId = null;
-    } catch (e) {
-        logSystemFailure('resolvePaymentRequest', e, { requestId, action }).catch(() => {});
-        showToast(toErrorMessage(e), 'error');
-    }
-}
-
-function renderOutgoingPaymentRequests() {
-    const list = document.getElementById('outgoing-requests-list');
-    if (!list || !currentUser) return;
-
-    const q = query(
-        collection(db, "paymentRequests"),
-        where("fromId", "==", currentUser.uid),
-        orderBy("createdAt", "desc"),
-        limit(10)
-    );
-
-    getDocs(q).then((snap) => {
-        list.innerHTML = '';
-        if (snap.empty) { renderEmptyState(list, 'Nenhuma cobrança enviada.'); return; }
-        snap.forEach((d) => {
-            const req = { id: d.id, ...d.data() };
-            const item = document.createElement('div');
-            item.className = 'contact-card';
-            const statusColor = req.status === 'pending' ? 'var(--gold)' : req.status === 'paid' ? 'var(--green)' : 'var(--red)';
-            const statusLabel = req.status === 'pending' ? 'Aguardando' : req.status === 'paid' ? 'Pago' : 'Recusado';
-            const copy = document.createElement('div');
-            copy.className = 'contact-copy';
-            const title = document.createElement('strong');
-            title.textContent = req.toName || req.toShortId || 'Conta';
-            const details = document.createElement('small');
-            details.textContent = req.note
-                ? `${formatMoney(req.amount)} • "${String(req.note).slice(0, 100)}"`
-                : formatMoney(req.amount);
-            const status = document.createElement('small');
-            status.style.color = statusColor;
-            status.textContent = statusLabel;
-            copy.appendChild(title);
-            copy.appendChild(details);
-            copy.appendChild(status);
-            item.appendChild(copy);
-            if (req.status === 'pending') {
-                const cancelButton = document.createElement('button');
-                cancelButton.className = 'small-btn secondary';
-                cancelButton.innerHTML = '<i class="fas fa-times"></i>';
-                cancelButton.addEventListener('click', () => window.cancelOutgoingRequest(req.id));
-                item.appendChild(cancelButton);
-            }
-            list.appendChild(item);
-        });
-    }).catch(() => renderEmptyState(list, 'Erro ao carregar cobranças.'));
-}
-
-window.cancelOutgoingRequest = async (requestId) => {
-    try {
-        await updateDoc(doc(db, "paymentRequests", requestId), { status: 'cancelled', resolvedAt: serverTimestamp() });
-        showToast('Cobrança cancelada.');
-        renderOutgoingPaymentRequests();
-    } catch (e) {
-        showToast(toErrorMessage(e), 'error');
-    }
-};
-
-// ═══════════════════════════════════════════════════════════════
-// PAINEL DE ANÁLISE SALARIAL / WELFARE
-// ═══════════════════════════════════════════════════════════════
-function initWelfarePanel() {
-    if (!hasGovernmentAccess()) return;
-    if (!CITY_HALL_CONFIGURED) {
-        currentAllUsers = [];
-        renderWelfarePanel();
-        return;
-    }
-    if (unsubAllUsers) {
-        // Already listening — just re-render with latest data
-        renderWelfarePanel();
-        return;
-    }
-
-    unsubAllUsers = onSnapshot(collection(db, "users"), (snap) => {
-        currentAllUsers = [];
-        snap.forEach((d) => {
-            if (d.id === CITY_HALL_ID) return;
-            currentAllUsers.push({ uid: d.id, ...d.data() });
-        });
-        currentAllUsers.sort((a, b) => Number(a.balance || 0) - Number(b.balance || 0));
-        renderWelfarePanel();
-    }, () => {});
-}
-
-function renderWelfarePanel() {
-    const tbody = document.getElementById('welfare-tbody');
-    const thresholdInput = document.getElementById('welfare-threshold-input');
-    const autoStatusEl = document.getElementById('welfare-auto-status');
-
-    if (!tbody) return;
-    tbody.innerHTML = '';
-
-    if (!currentAllUsers.length) {
-        const tr = document.createElement('tr');
-        tr.innerHTML = `<td colspan="5" style="text-align:center; padding:16px; color:var(--text-muted);">Nenhum usuário encontrado.</td>`;
-        tbody.appendChild(tr);
-    } else {
-        currentAllUsers.forEach((u) => {
-            const bal = Number(u.balance || 0);
-            const isEligible = u.welfareEligible !== false;
-            const tr = document.createElement('tr');
-            tr.style.cssText = 'border-bottom:1px solid var(--border-subtle);';
-            tr.innerHTML = `
-                <td style="padding:9px 8px; font-size:0.82rem;">${u.name || '—'}</td>
-                <td style="padding:9px 8px; font-size:0.78rem; font-family:monospace; color:var(--text-muted);">${u.shortId || '—'}</td>
-                <td style="padding:9px 8px; font-size:0.85rem; font-weight:700; color:${bal >= 0 ? 'var(--green)' : 'var(--red)'};">${formatMoney(bal)}</td>
-                <td style="padding:9px 8px;">
-                    <span style="font-size:0.7rem; font-weight:700; padding:3px 8px; border-radius:99px; 
-                        background:${isEligible ? 'var(--green-dim)' : 'var(--red-dim)'};
-                        color:${isEligible ? 'var(--green)' : 'var(--red)'};">
-                        ${isEligible ? 'Elegível' : 'Bloqueado'}
-                    </span>
-                </td>
-                <td style="padding:9px 8px;">
-                    <button onclick="toggleWelfareFromPanel('${u.uid}', ${!isEligible})" 
-                        style="width:auto; margin:0; padding:5px 10px; font-size:0.72rem; 
-                            background:${isEligible ? 'var(--red-dim)' : 'var(--green-dim)'}; 
-                            color:${isEligible ? 'var(--red)' : 'var(--green)'};
-                            border:1px solid ${isEligible ? 'rgba(255,77,106,0.3)' : 'rgba(0,232,124,0.3)'};
-                            border-radius:8px; cursor:pointer;">
-                        ${isEligible ? 'Bloquear' : 'Liberar'}
-                    </button>
-                </td>
-            `;
-            tbody.appendChild(tr);
-        });
-    }
-
-    if (thresholdInput && !thresholdInput.dataset.filled) {
-        thresholdInput.value = welfareAutoThreshold > 0 ? welfareAutoThreshold.toFixed(2) : '';
-        thresholdInput.dataset.filled = '1';
-    }
-    if (autoStatusEl) {
-        autoStatusEl.innerText = welfareAutoEnabled
-            ? `Automação ATIVA — Abaixo de ${formatMoney(welfareAutoThreshold)} = elegível.`
-            : 'Automação INATIVA.';
-        autoStatusEl.style.color = welfareAutoEnabled ? 'var(--green)' : 'var(--text-muted)';
-    }
-}
-
-window.toggleWelfareFromPanel = async (uid, nextEligible) => {
-    if (!ensureAdmin()) return;
-    try {
-        await updateDoc(doc(db, "users", uid), {
-            welfareEligible: nextEligible,
-            welfareStatusUpdatedAt: serverTimestamp(),
-            welfareStatusUpdatedBy: currentUser?.uid || 'SYSTEM'
-        });
-        showToast(`Auxílio ${nextEligible ? 'liberado' : 'bloqueado'}.`);
-    } catch (e) {
-        showToast(toErrorMessage(e), 'error');
-    }
-};
-
-window.applyWelfareAutomation = async () => {
-    if (!ensureAdmin()) return;
-    if (!requireCityHallConfigured()) return;
-    const thresholdInput = document.getElementById('welfare-threshold-input');
-    if (!thresholdInput) return;
-    const threshold = toNumber(thresholdInput.value);
-    if (!Number.isFinite(threshold) || threshold < 0) { showToast('Informe um limite válido.', 'error'); return; }
-
-    try {
-        // Save config to city hall
-        await updateDoc(getCityHallRef(), {
-            welfareAutoEnabled: true,
-            welfareAutoThreshold: threshold
-        });
-
-        // Batch-update all users
-        let updated = 0;
-        for (const u of currentAllUsers) {
-            const bal = Number(u.balance || 0);
-            const shouldBeEligible = bal <= threshold;
-            if (u.welfareEligible !== shouldBeEligible) {
-                await updateDoc(doc(db, "users", u.uid), {
-                    welfareEligible: shouldBeEligible,
-                    welfareStatusUpdatedAt: serverTimestamp(),
-                    welfareStatusUpdatedBy: currentUser?.uid || 'SYSTEM'
-                });
-                updated++;
-            }
-        }
-
-        const input = document.getElementById('welfare-threshold-input');
-        if (input) input.dataset.filled = '';
-        showToast(`Automação aplicada! ${updated} conta(s) atualizada(s).`);
-    } catch (e) {
-        logSystemFailure('applyWelfareAutomation', e, { userId: currentUser?.uid, threshold }).catch(() => {});
-        showToast(toErrorMessage(e), 'error');
-    }
-};
-
-window.disableWelfareAutomation = async () => {
-    if (!ensureAdmin()) return;
-    if (!requireCityHallConfigured()) return;
-    try {
-        await updateDoc(getCityHallRef(), {
-            welfareAutoEnabled: false
-        });
-        showToast('Automação desativada.');
-    } catch (e) {
-        showToast(toErrorMessage(e), 'error');
-    }
-};
-
-function openSettingsModal() {
-    renderPasswordSecurity();
-    renderPinSecurity();
-    const nameInput = document.getElementById('settings-new-name');
-    if (nameInput && currentUser?.name) {
-        nameInput.placeholder = currentUser.name;
-        nameInput.value = currentUser.name;
-    }
-    clearSettingsSecretInputs();
-    const modal = document.getElementById('settings-modal');
-    if (modal) modal.classList.remove('hidden');
-}
-window.openSettingsModal = openSettingsModal;
-
 function initStaticListeners() {
     const logoutBtn = document.getElementById('logout-btn');
     if (logoutBtn && !logoutBtn.dataset.bound) {
@@ -3429,6 +2831,22 @@ function initStaticListeners() {
         amountInput.addEventListener('input', updateTransferPreview);
     }
 
+    const destIdInput = document.getElementById('dest-id');
+    if (destIdInput && !destIdInput.dataset.bound) {
+        destIdInput.dataset.bound = '1';
+        destIdInput.addEventListener('input', () => {
+            destIdInput.value = destIdInput.value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 6);
+        });
+    }
+
+    const regPinInput = document.getElementById('reg-pin');
+    if (regPinInput && !regPinInput.dataset.bound) {
+        regPinInput.dataset.bound = '1';
+        regPinInput.addEventListener('input', () => {
+            regPinInput.value = regPinInput.value.replace(/\D/g, '').slice(0, 6);
+        });
+    }
+
     const pinInput = document.getElementById('confirm-pin-input');
     if (pinInput && !pinInput.dataset.bound) {
         pinInput.dataset.bound = '1';
@@ -3437,7 +2855,7 @@ function initStaticListeners() {
         });
     }
 
-    ['current-pin', 'new-pin', 'confirm-new-pin', 'reg-pin'].forEach((pinInputId) => {
+    ['current-pin', 'new-pin', 'confirm-new-pin'].forEach((pinInputId) => {
         const settingsPinInput = document.getElementById(pinInputId);
         if (settingsPinInput && !settingsPinInput.dataset.bound) {
             settingsPinInput.dataset.bound = '1';
@@ -3447,14 +2865,6 @@ function initStaticListeners() {
         }
     });
 
-    const destIdInput = document.getElementById('dest-id');
-    if (destIdInput && !destIdInput.dataset.bound) {
-        destIdInput.dataset.bound = '1';
-        destIdInput.addEventListener('input', () => {
-            destIdInput.value = destIdInput.value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 6);
-        });
-    }
-
     const welfareTargetInput = document.getElementById('welfare-target-id');
     if (welfareTargetInput && !welfareTargetInput.dataset.bound) {
         welfareTargetInput.dataset.bound = '1';
@@ -3462,38 +2872,8 @@ function initStaticListeners() {
             welfareTargetInput.value = welfareTargetInput.value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 6);
         });
     }
-
-    const reqDestInput = document.getElementById('req-dest-id');
-    if (reqDestInput && !reqDestInput.dataset.bound) {
-        reqDestInput.dataset.bound = '1';
-        reqDestInput.addEventListener('input', () => {
-            reqDestInput.value = reqDestInput.value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 6);
-        });
-    }
-
-    const fineTargetInput = document.getElementById('fine-target-id');
-    if (fineTargetInput && !fineTargetInput.dataset.bound) {
-        fineTargetInput.dataset.bound = '1';
-        fineTargetInput.addEventListener('input', () => {
-            fineTargetInput.value = fineTargetInput.value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 6);
-        });
-    }
 }
 
-toggleAuth('login');
 initStaticListeners();
+toggleAuth('login');
 updateTransferPreview();
-
-
-
-
-
-
-
-
-
-
-
-
-
-
