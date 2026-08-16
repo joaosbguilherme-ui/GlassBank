@@ -48,4 +48,4 @@ Funciona em **desktop e mobile**, nos principais navegadores modernos.
 
 ## ⚠️ Aviso
 
-Projeto **privado e educacional**. Não utilize dados financeiros ou informações pessoais reais.
+Não utilize dados financeiros ou informações pessoais reais.
