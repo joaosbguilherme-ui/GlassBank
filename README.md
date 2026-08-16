@@ -1,44 +1,55 @@
-# 💳 GlassBank
+# GlassBank
 
-> Banco digital fictício com sistema financeiro completo e economia simulada.
+Simulador bancário educacional com economia simulada, desenvolvido com **HTML, CSS, JavaScript e Firebase (Auth + Firestore)**.
 
-## ✨ Sobre
-
-O **GlassBank** é uma experiência de banco digital fictício, com interface moderna e sistema de economia simulada, desenvolvido para funcionar diretamente no navegador.
+🌐 **Acesse online:** [GlassBank](https://joaosbguilherme-ui.github.io/GlassBank/)
 
 ## 🚀 Funcionalidades
 
-* 🔐 Login e cadastro
-* 💰 Saldo e conta bancária
-* 💸 PIX fictício
+* 🔐 Login, cadastro e PIN
+* 💸 PIX com QR Code
+* 💰 Poupança, empréstimos e crédito
+* 🏧 Saques e depósitos
+* 🧾 Contas de água, luz e internet
 * 📊 Histórico de transações
-* 🔔 Sistema de notificações
-* 📈 Investimentos e poupança
-* 🏦 Crédito e empréstimos
-* 🏛️ Sistema de impostos e governo
-* 🗄️ Backend e banco de dados
-* ⚙️ Configurações de conta e segurança
-
-## 🌐 Acesse online
-
-[Abrir GlassBank](https://joaosbguilherme-ui.github.io/GlassBank/?utm_source=chatgpt.com)
-
-O projeto pode ser utilizado diretamente pelo **GitHub Pages**, sem necessidade de instalação.
+* 📈 Bolsa de valores GlassCoin (GLS)
+* 🏛️ Prefeitura, impostos e benefícios
+* 📱 Interface responsiva
+* 🌙 Tema claro e escuro
+* 📄 Exportação do extrato em CSV/PDF
 
 ## 🛠️ Tecnologias
 
-* HTML5
-* CSS3
-* JavaScript
-* Backend
-* Banco de dados
+* HTML5, CSS3 e JavaScript
+* Firebase Authentication
+* Cloud Firestore
+* html5-qrcode
+* Font Awesome e Google Fonts
+
+## 📂 Estrutura
+
+```text
+index.html  — Interface da aplicação
+style.css   — Estilos e responsividade
+script.js   — Lógica principal
+```
+
+## 💻 Execução local
+
+```bash
+npx serve .
+```
+
+Depois acesse `http://localhost:3000`.
+
+## 📱 Compatibilidade
+
+Funciona em **desktop e mobile**, nos principais navegadores modernos.
 
 ## ⚠️ Aviso
 
-O **GlassBank é um projeto fictício e educacional**. Não utilize informações financeiras, senhas ou dados pessoais reais.
+Projeto **privado e educacional**. Não utilize dados financeiros ou informações pessoais reais.
 
----
+## 📄 Licença
 
-<p align="center">
-  Desenvolvido por <strong>joaosbguilherme-ui</strong> 💙
-</p>
+Projeto privado — uso educacional.
