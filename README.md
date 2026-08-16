@@ -85,13 +85,18 @@ Funciona em:
 
 Também possui interface adaptada para **desktop e mobile**. O leitor de QR Code requer acesso à câmera (`getUserMedia`).
 
-## ⚠️ Limitações
+## ⚠️ Avisos
 
-- Transações não podem ser estornadas.
-- O scanner QR precisa de uma câmera.
-- A atualização da bolsa depende das permissões de escrita no Firestore.
-- Recursos administrativos são restritos a contas autorizadas.
-- O projeto ainda **não é um PWA** e não possui funcionamento offline.
+- 🚫 **Não utilize dados pessoais ou financeiros reais.**
+- 🔒 Não informe dados como nome completo, CPF, endereço, telefone, senhas, dados bancários, números de cartão ou outras informações sensíveis.
+- 💳 Os valores e transações do GlassBank são **fictícios** e fazem parte de uma economia simulada.
+- ⚠️ Transações não podem ser estornadas.
+- 📷 O scanner QR precisa de uma câmera.
+- 📈 A atualização da bolsa depende das permissões de escrita no Firestore.
+- 🛡️ Recursos administrativos são restritos a contas autorizadas.
+- 📱 O projeto ainda **não é um PWA** e não possui funcionamento offline.
+
+**O GlassBank é um projeto educacional. Não o utilize para armazenar ou processar informações pessoais ou financeiras reais.**
 
 ## 📚 Objetivo
 
