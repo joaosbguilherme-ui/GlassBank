@@ -3,44 +3,44 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://www.gstatic.com https://unpkg.com https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://fonts.googleapis.com; img-src 'self' data: https:; media-src https:; connect-src https://*.googleapis.com https://*.firebaseio.com https://*.gstatic.com https://firestore.googleapis.com https://identitytoolkit.googleapis.com; font-src 'self' https://cdnjs.cloudflare.com https://fonts.gstatic.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://www.gstatic.com https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://fonts.googleapis.com; img-src 'self' data: https:; media-src https:; connect-src https://*.googleapis.com https://*.firebaseio.com https://*.gstatic.com https://firestore.googleapis.com https://identitytoolkit.googleapis.com; font-src 'self' https://cdnjs.cloudflare.com https://fonts.gstatic.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'">
     <meta name="referrer" content="strict-origin-when-cross-origin">
     <title>GlassBank</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=Figtree:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer">
-    <script src="https://unpkg.com/html5-qrcode" type="text/javascript" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/7.3.1/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js" type="text/javascript" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
     <link rel="stylesheet" href="style.css">
 </head>
-<body>
+<body class="logged-out">
     <audio id="snd-success" src="https://assets.mixkit.co/active_storage/sfx/2000/2000-preview.mp3"></audio>
     <audio id="snd-error"   src="https://assets.mixkit.co/active_storage/sfx/2003/2003-preview.mp3"></audio>
     <audio id="snd-click"   src="https://assets.mixkit.co/active_storage/sfx/2568/2568-preview.mp3"></audio>
 
     <!-- Background -->
-    <div class="background-blobs">
+    <div class="background-blobs" aria-hidden="true">
         <div class="blob blob-1"></div>
         <div class="blob blob-2"></div>
         <div class="blob blob-3"></div>
     </div>
 
     <!-- Toasts -->
-    <div id="toast-container"></div>
+    <div id="toast-container" aria-live="polite"></div>
 
     <!-- ═══ PIN MODAL ═══════════════════════════════════════════ -->
-    <div id="pin-modal" class="modal-overlay hidden">
+    <div id="pin-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="pin-modal-title">
         <div class="modal-glass">
-            <div style="font-size:2rem; margin-bottom:12px; color:var(--green); background:var(--green-dim); width:56px; height:56px; border-radius:50%; display:flex; align-items:center; justify-content:center; margin:0 auto 16px; border:1px solid rgba(0,232,124,0.25);">
-                <i class="fas fa-lock"></i>
+            <div class="modal-icon success">
+                <i class="fas fa-lock" aria-hidden="true"></i>
             </div>
-            <h3>Confirmação de Segurança</h3>
+            <h3 id="pin-modal-title">Confirmação de Segurança</h3>
             <p>Digite seu PIN de 4 a 6 dígitos para autorizar</p>
             <p id="confirm-pin-status" class="section-copy"></p>
             <input type="password" id="confirm-pin-input" maxlength="6" placeholder="••••••" autocomplete="off" inputmode="numeric" pattern="\d{4,6}">
             <div class="modal-actions">
                 <button id="confirm-pin-btn">
-                    <i class="fas fa-check" style="margin-right:6px"></i>Confirmar
+                    <i class="fas fa-check" style="margin-right:6px" aria-hidden="true"></i>Confirmar
                 </button>
                 <button class="secondary" onclick="closeModal('pin-modal')">Cancelar</button>
             </div>
@@ -48,12 +48,12 @@
     </div>
 
     <!-- ═══ TRANSFER CONFIRM MODAL ══════════════════════════════ -->
-    <div id="transfer-confirm-modal" class="modal-overlay hidden">
+    <div id="transfer-confirm-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="transfer-confirm-title">
         <div class="modal-glass">
             <div class="modal-icon success">
-                <i class="fas fa-shield-alt"></i>
+                <i class="fas fa-shield-alt" aria-hidden="true"></i>
             </div>
-            <h3>Deseja confirmar a transferência?</h3>
+            <h3 id="transfer-confirm-title">Deseja confirmar a transferência?</h3>
             <p>Confira os dados antes de autorizar com seu PIN.</p>
             <div class="modal-summary">
                 <div class="summary-row"><span>Destino</span> <strong id="confirm-destination">-</strong></div>
@@ -64,7 +64,7 @@
             </div>
             <div class="modal-actions">
                 <button id="confirm-transfer-btn">
-                    <i class="fas fa-check" style="margin-right:6px"></i>Confirmar
+                    <i class="fas fa-check" style="margin-right:6px" aria-hidden="true"></i>Confirmar
                 </button>
                 <button class="secondary" onclick="closeModal('transfer-confirm-modal')">Cancelar</button>
             </div>
@@ -72,19 +72,19 @@
     </div>
 
     <!-- ═══ SETTINGS MODAL ══════════════════════════════════════ -->
-    <div id="settings-modal" class="modal-overlay hidden">
+    <div id="settings-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="settings-title">
         <div class="modal-glass settings-style">
             <div class="modal-icon">
-                <i class="fas fa-cog"></i>
+                <i class="fas fa-cog" aria-hidden="true"></i>
             </div>
-            <h3>Configurações</h3>
+            <h3 id="settings-title">Configurações</h3>
             <p>Atualize seus dados de acesso e identificação.</p>
 
             <div class="settings-block">
                 <label for="settings-new-name">Nome de usuário</label>
                 <input type="text" id="settings-new-name" placeholder="Novo nome" maxlength="40">
                 <button class="secondary" onclick="changeAccountName()">
-                    <i class="fas fa-user-edit" style="margin-right:6px;"></i>Atualizar Nome
+                    <i class="fas fa-user-edit" style="margin-right:6px;" aria-hidden="true"></i>Atualizar Nome
                 </button>
             </div>
 
@@ -95,7 +95,7 @@
                 <input type="password" id="new-password" placeholder="Nova senha forte" autocomplete="new-password">
                 <input type="password" id="confirm-new-password" placeholder="Confirmar nova senha" autocomplete="new-password">
                 <button id="change-password-btn" class="secondary" onclick="changeAccountPassword()">
-                    <i class="fas fa-lock" style="margin-right:6px;"></i>Trocar Senha
+                    <i class="fas fa-lock" style="margin-right:6px;" aria-hidden="true"></i>Trocar Senha
                 </button>
             </div>
 
@@ -106,26 +106,26 @@
                 <input type="password" id="new-pin" placeholder="Novo PIN (4 a 6 dígitos)" maxlength="6" autocomplete="off" inputmode="numeric" pattern="\d{4,6}">
                 <input type="password" id="confirm-new-pin" placeholder="Confirmar novo PIN" maxlength="6" autocomplete="off" inputmode="numeric" pattern="\d{4,6}">
                 <button id="change-pin-btn" class="secondary" onclick="changeAccountPin()">
-                    <i class="fas fa-key" style="margin-right:6px;"></i>Trocar PIN
+                    <i class="fas fa-key" style="margin-right:6px;" aria-hidden="true"></i>Trocar PIN
                 </button>
             </div>
 
             <button onclick="closeModal('settings-modal')" style="margin-top:6px;">
-                <i class="fas fa-times" style="margin-right:6px"></i>Fechar
+                <i class="fas fa-times" style="margin-right:6px" aria-hidden="true"></i>Fechar
             </button>
         </div>
     </div>
 
     <!-- ═══ RECEIPT MODAL ═══════════════════════════════════════ -->
-    <div id="receipt-modal" class="modal-overlay hidden">
+    <div id="receipt-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="receipt-title">
         <div class="modal-glass receipt-style">
             <div class="receipt-header">
-                <i class="fas fa-check-circle"></i>
+                <i class="fas fa-check-circle" aria-hidden="true"></i>
                 <h2 id="receipt-title">GLASS BANK</h2>
                 <p id="receipt-subtitle">Comprovante de Transação</p>
             </div>
             <div class="receipt-body">
-                <p style="font-size:0.75rem; text-transform:uppercase; letter-spacing:0.08em; color:var(--text-muted); text-align:center;">Valor transferido</p>
+                <p class="receipt-label">Valor transferido</p>
                 <h1 id="rcpt-amount">R$ 0,00</h1>
                 <div class="row"><span>Impostos:</span> <span id="rcpt-tax">R$ 0,00</span></div>
                 <div class="row"><span>Total debitado:</span> <span id="rcpt-total">R$ 0,00</span></div>
@@ -141,401 +141,579 @@
                 <div class="row"><span>Autenticação:</span> <span id="rcpt-auth">-</span></div>
             </div>
             <button onclick="closeModal('receipt-modal')" style="margin-top:16px;">
-                <i class="fas fa-times" style="margin-right:6px"></i>Fechar
+                <i class="fas fa-times" style="margin-right:6px" aria-hidden="true"></i>Fechar
             </button>
         </div>
     </div>
 
-    <!-- ═══ APP CONTAINER ═══════════════════════════════════════ -->
-    <div class="app-container glass">
-
-        <!-- ── AUTH ─────────────────────────────────────────── -->
-        <section id="auth-section" class="active-section">
-            <div class="logo-area">
-                <h1><i class="fas fa-landmark" style="font-size:1.6rem; margin-right:8px; vertical-align:middle; -webkit-text-fill-color:initial; color:var(--green); opacity:0.85;"></i>GlassBank</h1>
-                <p>Economia Real Simulada</p>
+    <!-- ═══ SAVINGS MODAL (COFRE) ═══════════════════════════════ -->
+    <div id="savings-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="savings-modal-title">
+        <div class="modal-glass">
+            <div class="modal-icon success">
+                <i class="fas fa-piggy-bank" aria-hidden="true"></i>
             </div>
-
-            <div class="auth-tabs">
-                <button onclick="toggleAuth('login')" class="active">Entrar</button>
-                <button onclick="toggleAuth('register')">Cadastrar</button>
+            <h3 id="savings-modal-title">Cofre (Poupança)</h3>
+            <p id="savings-modal-balance">Saldo no cofre: R$ 0,00</p>
+            <label for="savings-modal-amount" id="savings-modal-label">Valor para guardar</label>
+            <input type="number" id="savings-modal-amount" placeholder="0,00" min="0.01" step="0.01" inputmode="decimal">
+            <p class="section-copy" id="savings-modal-limit">-</p>
+            <div class="modal-actions">
+                <button id="savings-modal-confirm">Confirmar</button>
+                <button class="secondary" onclick="closeModal('savings-modal')">Cancelar</button>
             </div>
+        </div>
+    </div>
 
-            <form id="auth-form">
-                <input type="text"     id="fullname"   placeholder="Nome Completo"            style="display:none;">
-                <input type="email"    id="email"      placeholder="E-mail"        required>
-                <input type="password" id="password"   placeholder="Senha"         required>
-                <input type="password" id="reg-pin"    placeholder="PIN de 4 a 6 dígitos" maxlength="6" pattern="\d{4,6}" inputmode="numeric" style="display:none;">
-                <select                id="role-select" style="display:none;">
-                    <option value="user">Cidadão</option>
-                    <option value="merchant">Comércio (PJ)</option>
-                </select>
-                <button type="submit" id="auth-btn">Entrar</button>
-                <button type="button" id="forgot-password-btn" class="text-link" onclick="requestPasswordReset()">Esqueci minha senha</button>
-            </form>
-        </section>
+    <!-- ═══ CASH MACHINE MODAL ══════════════════════════════════ -->
+    <div id="cash-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="cash-modal-title">
+        <div class="modal-glass">
+            <div class="modal-icon success">
+                <i class="fas fa-money-bill-wave" aria-hidden="true"></i>
+            </div>
+            <h3 id="cash-modal-title">Caixa Eletrônico</h3>
+            <div class="modal-summary">
+                <div class="summary-row"><span>Saldo em conta</span> <strong id="cash-modal-balance">R$ 0,00</strong></div>
+                <div class="summary-row"><span>Carteira em dinheiro</span> <strong id="cash-modal-cash">R$ 0,00</strong></div>
+                <div class="summary-row total"><span>Limite de saque restante hoje</span> <strong id="cash-modal-limit">R$ 0,00</strong></div>
+            </div>
+            <label for="cash-amount">Valor</label>
+            <input type="number" id="cash-amount" placeholder="0,00" min="0.01" step="0.01" inputmode="decimal">
+            <p class="section-copy">Saque tem tarifa de 1% (mín. R$ 1,00, máx. R$ 5,00) para o cofre da Prefeitura. Depósito é grátis.</p>
+            <div class="modal-actions">
+                <button id="cash-withdraw-btn">
+                    <i class="fas fa-hand-holding-usd" style="margin-right:6px" aria-hidden="true"></i>Sacar
+                </button>
+                <button id="cash-deposit-btn" class="secondary">
+                    <i class="fas fa-money-bill-wave" style="margin-right:6px" aria-hidden="true"></i>Depositar
+                </button>
+            </div>
+            <button class="secondary" onclick="closeModal('cash-modal')" style="margin-top:6px;">Fechar</button>
+        </div>
+    </div>
 
-        <!-- ── DASHBOARD ─────────────────────────────────────── -->
-        <section id="dashboard-section" class="hidden">
-            <header>
+    <!-- ═══ STATEMENT PRINT VIEW (print only) ═══════════════════ -->
+    <div id="print-statement" aria-hidden="true"></div>
+
+    <!-- ═══ APP SHELL ═══════════════════════════════════════════ -->
+    <div class="app-shell">
+
+        <!-- ── SIDEBAR (desktop) ──────────────────────────────── -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-brand">
+                <i class="fas fa-landmark" aria-hidden="true"></i>
+                <span>GlassBank</span>
+            </div>
+            <nav class="sidebar-nav" aria-label="Navegação principal">
+                <button data-nav="dashboard"><i class="fas fa-house" aria-hidden="true"></i><span>Início</span></button>
+                <button data-nav="pix"><i class="fas fa-paper-plane" aria-hidden="true"></i><span>Pix</span></button>
+                <button data-nav="invest"><i class="fas fa-chart-line" aria-hidden="true"></i><span>Investir</span></button>
+                <button data-nav="credit"><i class="fas fa-hand-holding-usd" aria-hidden="true"></i><span>Crédito</span></button>
+                <button data-nav="bills"><i class="fas fa-file-invoice-dollar" aria-hidden="true"></i><span>Contas</span></button>
+                <div class="sidebar-sep"></div>
+                <button data-nav="transparency"><i class="fas fa-landmark" aria-hidden="true"></i><span>Governo</span></button>
+                <button data-nav="notifications">
+                    <i class="fas fa-bell" aria-hidden="true"></i><span>Notificações</span>
+                    <span id="sidebar-notification-badge" class="nav-badge hidden">0</span>
+                </button>
+                <button data-nav="admin-panel" id="sidebar-admin-btn" class="hidden">
+                    <i class="fas fa-shield-alt" aria-hidden="true"></i><span>Admin</span>
+                </button>
+            </nav>
+            <div class="sidebar-foot">Economia Real Simulada</div>
+        </aside>
+
+        <!-- ── MAIN COLUMN ────────────────────────────────────── -->
+        <div class="app-main">
+
+            <!-- Topbar (logged in) -->
+            <header class="topbar" id="topbar">
                 <div class="user-info">
                     <img src="" id="user-avatar" alt="Avatar">
                     <div>
-                        <h3 id="user-name">Carregando...</h3>
+                        <h3 id="user-name" class="skeleton">Carregando...</h3>
                         <span id="user-role" class="badge">Usuário</span>
                     </div>
                 </div>
                 <div class="header-icons">
-                    <button class="icon-only" onclick="openSettingsModal()" title="Configurações">
-                        <i class="fas fa-cog"></i>
+                    <button id="theme-toggle-btn" class="icon-only" title="Alternar tema" aria-label="Alternar tema claro/escuro">
+                        <i id="theme-icon" class="fas fa-sun" aria-hidden="true"></i>
                     </button>
-                    <button class="icon-only notification-trigger" onclick="navTo('notifications')" title="Notificações">
-                        <i class="fas fa-bell"></i>
+                    <button class="icon-only" onclick="openSettingsModal()" title="Configurações" aria-label="Abrir configurações">
+                        <i class="fas fa-cog" aria-hidden="true"></i>
+                    </button>
+                    <button class="icon-only notification-trigger" onclick="navTo('notifications')" title="Notificações" aria-label="Ver notificações">
+                        <i class="fas fa-bell" aria-hidden="true"></i>
                         <span id="notification-badge" class="icon-badge hidden">0</span>
                     </button>
-                    <button id="logout-btn" class="icon-only" title="Sair">
-                        <i class="fas fa-power-off"></i>
+                    <button id="logout-btn" class="icon-only" title="Sair" aria-label="Sair da conta">
+                        <i class="fas fa-power-off" aria-hidden="true"></i>
                     </button>
                 </div>
             </header>
 
-            <!-- Balance card -->
-            <div class="balance-card glass-card">
-                <p>Saldo Disponível</p>
-                <h1 id="user-balance">R$ 0,00</h1>
-                <div class="card-footer">
-                    <p class="account-id">ID: <span id="user-short-id">···</span></p>
-                    <span id="loan-indicator" class="hiddenBadge">
-                        <i class="fas fa-exclamation-triangle" style="margin-right:4px; font-size:0.6rem;"></i>DÍVIDA ATIVA
-                    </span>
-                </div>
-            </div>
+            <div class="app-container glass" id="app-container">
 
-            <!-- Daily reward -->
-            <div id="daily-reward-area" class="glass-card hidden">
-                <div class="section-head">
-                    <div>
-                        <h3><i class="fas fa-gift" style="color:var(--green); margin-right:6px; font-size:0.9rem;"></i>Auxílio Cidadão</h3>
-                        <p id="daily-reward-status" class="section-copy">Disponível a cada 24h.</p>
+                <!-- ── AUTH ─────────────────────────────────────── -->
+                <section id="auth-section" class="active-section">
+                    <div class="logo-area">
+                        <h1><i class="fas fa-landmark" aria-hidden="true"></i>GlassBank</h1>
+                        <p>Economia Real Simulada</p>
                     </div>
-                    <button id="claim-reward-btn" class="small-btn" onclick="claimDailyReward()">
-                        <i class="fas fa-hand-holding-heart" style="margin-right:4px;"></i>Resgatar
-                    </button>
-                </div>
-            </div>
 
-            <!-- Actions grid -->
-            <div class="actions-grid">
-                <button onclick="navTo('transfer')">
-                    <div class="icon-box"><i class="fas fa-paper-plane"></i></div>Pix
-                </button>
-                <button onclick="navTo('qr-gen')">
-                    <div class="icon-box"><i class="fas fa-qrcode"></i></div>Cobrar
-                </button>
-                <button onclick="navTo('qr-scan')">
-                    <div class="icon-box"><i class="fas fa-camera"></i></div>Pagar
-                </button>
-                <button onclick="navTo('invest')">
-                    <div class="icon-box"><i class="fas fa-chart-line"></i></div>Investir
-                </button>
-                <button onclick="navTo('transparency')">
-                    <div class="icon-box"><i class="fas fa-landmark"></i></div>Governo
-                </button>
-                <button onclick="navTo('loans')">
-                    <div class="icon-box"><i class="fas fa-hand-holding-usd"></i></div>Crédito
-                </button>
-            </div>
-
-            <!-- Admin access -->
-            <button id="admin-btn" class="hidden wide-btn" onclick="navTo('admin-panel')">
-                <i class="fas fa-shield-alt" style="margin-right:8px;"></i>Painel Admin/Prefeitura
-            </button>
-
-            <!-- History -->
-            <div class="history-preview">
-                <div class="section-head">
-                    <div>
-                        <h3>Extrato</h3>
-                        <p class="section-copy">Toque em uma transação para detalhes.</p>
+                    <div class="auth-tabs">
+                        <button onclick="toggleAuth('login')" class="active">Entrar</button>
+                        <button onclick="toggleAuth('register')">Cadastrar</button>
                     </div>
-                </div>
-                <div class="filter-chips">
-                    <button data-filter="all" onclick="filterHistory('all', event)" class="active-chip">Tudo</button>
-                    <button data-filter="in"  onclick="filterHistory('in', event)">Entrada</button>
-                    <button data-filter="out" onclick="filterHistory('out', event)">Saída</button>
-                    <button data-filter="tax" onclick="filterHistory('tax', event)">Impostos</button>
-                </div>
-                <ul id="transaction-list"></ul>
-            </div>
-        </section>
 
-        <!-- ── NOTIFICATIONS ──────────────────────────────────── -->
-        <section id="notifications-section" class="hidden">
-            <button class="back-btn" onclick="navTo('dashboard')"><i class="fas fa-chevron-left"></i> Voltar</button>
-            <div class="section-head">
-                <div>
-                    <h2>Notificações</h2>
-                    <p class="section-copy">Recebidos, enviados, impostos e juros.</p>
-                </div>
-                <button class="secondary small-btn" onclick="markAllNotificationsRead()">
-                    <i class="fas fa-check-double" style="margin-right:4px;"></i>Marcar tudo
-                </button>
-            </div>
-            <div id="notifications-list" class="stack-list"></div>
-        </section>
+                    <form id="auth-form">
+                        <input type="text"     id="fullname"   placeholder="Nome Completo"            style="display:none;">
+                        <input type="email"    id="email"      placeholder="E-mail"        required>
+                        <input type="password" id="password"   placeholder="Senha"         required>
+                        <input type="password" id="reg-pin"    placeholder="PIN de 4 a 6 dígitos" maxlength="6" pattern="\d{4,6}" inputmode="numeric" style="display:none;">
+                        <select                id="role-select" style="display:none;">
+                            <option value="user">Cidadão</option>
+                            <option value="merchant">Comércio (PJ)</option>
+                        </select>
+                        <button type="submit" id="auth-btn">Entrar</button>
+                        <button type="button" id="forgot-password-btn" class="text-link" onclick="requestPasswordReset()">Esqueci minha senha</button>
+                    </form>
+                </section>
 
-        <!-- ── INVEST ─────────────────────────────────────────── -->
-        <section id="invest-section" class="hidden">
-            <button class="back-btn" onclick="navTo('dashboard')"><i class="fas fa-chevron-left"></i> Voltar</button>
-            <h2>Investimentos &amp; Poupança</h2>
-
-            <div class="glass-card">
-                <div class="section-head" style="margin-bottom:8px;">
-                    <h3><i class="fas fa-piggy-bank" style="color:var(--green); margin-right:6px; font-size:0.85rem;"></i>Cofre (Poupança)</h3>
-                </div>
-                <p style="margin-bottom:12px;">Rende <strong style="color:var(--green);">0,5%</strong> a cada hora. Saldo protegido, não transferível.</p>
-                <h1 id="savings-balance" style="font-family:'Syne',sans-serif; font-size:1.9rem; font-weight:800; letter-spacing:-0.02em; margin-bottom:14px;">R$ 0,00</h1>
-                <div class="row-btn">
-                    <button onclick="savingsAction('deposit')">Guardar</button>
-                    <button onclick="savingsAction('withdraw')" class="secondary">Sacar</button>
-                </div>
-            </div>
-
-            <div class="glass-card">
-                <div class="section-head" style="margin-bottom:8px;">
-                    <h3><i class="fas fa-chart-line" style="color:var(--gold); margin-right:6px; font-size:0.85rem;"></i>Bolsa de Valores</h3>
-                </div>
-                <p style="margin-bottom:8px; font-size:0.82rem;">Ação: <strong>GlassCoin (GLS)</strong></p>
-                <div class="stock-display" style="margin-bottom:8px;">
-                    <h1 id="stock-price" style="font-family:'Syne',sans-serif; font-size:1.9rem; font-weight:800; letter-spacing:-0.02em;">R$ 0,00</h1>
-                    <span id="stock-trend" class="trend-up">▲ 0%</span>
-                </div>
-                <p style="margin-bottom:14px; font-size:0.82rem;">
-                    Carteira: <strong style="color:var(--gold);"><span id="user-stock-count">0</span> GLS</strong>
-                </p>
-                <div class="row-btn">
-                    <button onclick="tradeStock('buy')">
-                        <i class="fas fa-plus" style="margin-right:4px; font-size:0.8rem;"></i>Comprar
-                    </button>
-                    <button onclick="tradeStock('sell')" class="danger-btn">
-                        <i class="fas fa-minus" style="margin-right:4px; font-size:0.8rem;"></i>Vender
-                    </button>
-                </div>
-            </div>
-        </section>
-
-        <!-- ── TRANSPARENCY ───────────────────────────────────── -->
-        <section id="transparency-section" class="hidden">
-            <button class="back-btn" onclick="navTo('dashboard')"><i class="fas fa-chevron-left"></i> Voltar</button>
-            <h2>Portal da Transparência</h2>
-
-            <div class="glass-card transparent-header">
-                <p style="font-size:0.72rem; text-transform:uppercase; letter-spacing:0.08em; color:var(--text-muted);">Total Arrecadado em Impostos</p>
-                <h1 id="total-tax-collected" style="font-family:'Syne',sans-serif; font-size:2rem; font-weight:800; letter-spacing:-0.02em; margin:8px 0 4px; color:var(--green);">R$ 0,00</h1>
-                <small id="total-tax-visibility-note" class="section-copy hidden">Total visível para todos.</small>
-                <div class="progress-bar-container">
-                    <div class="progress-fill" style="width:100%"></div>
-                </div>
-            </div>
-
-            <h3 style="margin-top:4px;">Votação de Orçamento</h3>
-            <p class="section-copy">Se a meta de votos for atingida, a prefeitura investe automaticamente.</p>
-            <div id="polls-list"></div>
-        </section>
-
-        <!-- ── ADMIN PANEL ────────────────────────────────────── -->
-        <section id="admin-panel-section" class="hidden">
-            <button class="back-btn" onclick="navTo('dashboard')"><i class="fas fa-chevron-left"></i> Voltar</button>
-            <h2><i class="fas fa-shield-alt" style="margin-right:8px; font-size:1rem; opacity:0.7;"></i>Gestão Municipal</h2>
-
-            <div class="balance-card admin-card">
-                <p>Cofre da Prefeitura</p>
-                <h1 id="city-hall-balance">R$ 0,00</h1>
-            </div>
-
-            <div class="admin-tools">
-
-                <!-- Tax slider -->
-                <div class="tool-item">
-                    <label><i class="fas fa-percentage" style="margin-right:6px;"></i>Ajuste de Imposto</label>
-                    <div class="slider-container">
-                        <input type="range" id="tax-slider" min="0" max="15" step="0.5" value="2">
-                        <span id="tax-value-display">2%</span>
-                    </div>
-                    <p id="tax-psychology" class="tax-status-green">Sistema Saudável</p>
-                    <button onclick="updateGlobalTax()" style="margin-top:10px;">
-                        <i class="fas fa-check" style="margin-right:6px;"></i>Aplicar Nova Taxa
-                    </button>
-                </div>
-
-                <!-- Daily reward -->
-                <div class="tool-item">
-                    <label><i class="fas fa-gift" style="margin-right:6px;"></i>Valor do Auxílio Diário</label>
-                    <div class="row">
-                        <input type="number" id="admin-daily-reward" placeholder="Ex: 50">
-                        <button onclick="updateDailyReward()" style="width:auto; margin:0; padding:13px 16px;">Salvar</button>
-                    </div>
-                </div>
-
-                <!-- Create poll -->
-                <div class="tool-item">
-                    <label><i class="fas fa-vote-yea" style="margin-right:6px;"></i>Criar Enquete de Investimento</label>
-                    <input type="text"   id="poll-title"  placeholder="Ex: Reforma do Hospital">
-                    <input type="number" id="poll-cost"   placeholder="Custo (R$)">
-                    <input type="number" id="poll-target" placeholder="Meta de Votos">
-                    <button onclick="createPoll()">
-                        <i class="fas fa-plus" style="margin-right:6px;"></i>Publicar Enquete
-                    </button>
-                    <p class="section-copy" style="margin-top:6px;">As enquetes ficam registradas no cofre para evitar bloqueio de permissão.</p>
-                </div>
-
-                <!-- Tax visibility -->
-                <div class="tool-item">
-                    <label><i class="fas fa-eye" style="margin-right:6px;"></i>Visibilidade da Arrecadação</label>
-                    <p id="tax-visibility-status" class="section-copy">Total visível para todos no portal.</p>
-                    <button id="toggle-tax-visibility-btn" class="secondary" onclick="togglePublicTaxVisibility()" style="margin-top:8px;">
-                        Ocultar total público
-                    </button>
-                </div>
-
-                <!-- Welfare control -->
-                <div class="tool-item">
-                    <label><i class="fas fa-user-shield" style="margin-right:6px;"></i>Controle de Auxílio</label>
-                    <input type="text" id="welfare-target-id" placeholder="ID da conta (ex: 12A34B)" maxlength="6" style="text-transform:uppercase;">
-                    <select id="welfare-target-state">
-                        <option value="allow">Liberar auxílio</option>
-                        <option value="block">Bloquear auxílio</option>
-                    </select>
-                    <button onclick="updateWelfareEligibility()">Aplicar Regra</button>
-                    <p id="welfare-admin-status" class="section-copy" style="margin-top:4px;">Informe o ID curto para liberar ou bloquear o benefício.</p>
-                </div>
-
-                <!-- Monitor -->
-                <div class="tool-item">
-                    <label><i class="fas fa-chart-bar" style="margin-right:6px;"></i>Monitoramento Rápido</label>
-                    <div class="admin-monitor-grid">
-                        <div class="monitor-box">
-                            <strong>Últimas 50 Transações</strong>
-                            <div id="admin-transactions-list" class="stack-list compact-list"></div>
+                <!-- ── DASHBOARD (Início) ───────────────────────── -->
+                <section id="dashboard-section" class="hidden">
+                    <!-- Balance card -->
+                    <div class="balance-card glass-card">
+                        <p>Saldo Disponível</p>
+                        <h1 id="user-balance" class="skeleton">R$ 0,00</h1>
+                        <div class="sparkline-area">
+                            <div id="balance-spark" class="sparkline" aria-hidden="true"></div>
+                            <div class="spark-range" role="group" aria-label="Período do gráfico">
+                                <button data-range="7" class="active-chip">7d</button>
+                                <button data-range="30">30d</button>
+                                <button data-range="0">Tudo</button>
+                            </div>
                         </div>
-                        <div class="monitor-box">
-                            <strong>Falhas Recentes</strong>
-                            <div id="admin-failures-list" class="stack-list compact-list"></div>
+                        <div class="card-footer">
+                            <p class="account-id">ID: <span id="user-short-id" class="skeleton">···</span></p>
+                            <span id="loan-indicator" class="hiddenBadge">
+                                <i class="fas fa-exclamation-triangle" style="margin-right:4px; font-size:0.6rem;" aria-hidden="true"></i>DÍVIDA ATIVA
+                            </span>
                         </div>
-                        <div class="monitor-box">
-                            <strong>Alertas de Saldo</strong>
-                            <div id="admin-alerts-list" class="stack-list compact-list"></div>
+                        <div class="wallet-strip">
+                            <div class="wallet-copy">
+                                <i class="fas fa-money-bill-wave" aria-hidden="true"></i>
+                                <div>
+                                    <small>Carteira em dinheiro</small>
+                                    <strong id="user-cash-balance">R$ 0,00</strong>
+                                </div>
+                            </div>
+                            <button class="small-btn" onclick="openCashModal()">
+                                <i class="fas fa-arrow-up-right-from-square" style="margin-right:4px;" aria-hidden="true"></i>Caixa
+                            </button>
                         </div>
                     </div>
-                </div>
-            </div>
-        </section>
 
-        <!-- ── TRANSFER ───────────────────────────────────────── -->
-        <section id="transfer-section" class="hidden">
-            <button class="back-btn" onclick="navTo('dashboard')"><i class="fas fa-chevron-left"></i> Voltar</button>
-            <h2>Transferir via Pix</h2>
+                    <div class="dashboard-side">
+                        <!-- Daily reward -->
+                        <div id="daily-reward-area" class="glass-card hidden">
+                            <div class="section-head">
+                                <div>
+                                    <h3><i class="fas fa-gift" style="color:var(--green); margin-right:6px; font-size:0.9rem;" aria-hidden="true"></i>Auxílio Cidadão</h3>
+                                    <p id="daily-reward-status" class="section-copy">Disponível a cada 24h.</p>
+                                </div>
+                                <button id="claim-reward-btn" class="small-btn" onclick="claimDailyReward()">
+                                    <i class="fas fa-hand-holding-heart" style="margin-right:4px;" aria-hidden="true"></i>Resgatar
+                                </button>
+                            </div>
+                        </div>
 
-            <div class="glass-card">
-                <div class="section-head">
-                    <div>
-                        <h3><i class="fas fa-star" style="font-size:0.8rem; margin-right:6px; color:var(--gold); opacity:0.8;"></i>Favoritos</h3>
-                        <p class="section-copy">Toque para preencher. Gerencie apelidos.</p>
+                        <!-- Actions grid -->
+                        <div class="actions-grid">
+                            <button onclick="navTo('transparency')">
+                                <div class="icon-box"><i class="fas fa-landmark" aria-hidden="true"></i></div>Governo
+                            </button>
+                            <button onclick="navTo('notifications')">
+                                <div class="icon-box"><i class="fas fa-bell" aria-hidden="true"></i></div>Avisos
+                            </button>
+                            <button onclick="openCashModal()">
+                                <div class="icon-box"><i class="fas fa-money-bill-wave" aria-hidden="true"></i></div>Caixa
+                            </button>
+                            <button onclick="navTo('bills')">
+                                <div class="icon-box"><i class="fas fa-file-invoice-dollar" aria-hidden="true"></i></div>Contas
+                            </button>
+                            <button id="admin-btn" class="hidden" onclick="navTo('admin-panel')">
+                                <div class="icon-box"><i class="fas fa-shield-alt" aria-hidden="true"></i></div>Admin
+                            </button>
+                        </div>
                     </div>
-                </div>
-                <div id="favorite-contacts" class="contact-list"></div>
-            </div>
 
-            <div class="glass-card">
-                <div class="section-head">
-                    <div>
-                        <h3><i class="fas fa-clock" style="font-size:0.8rem; margin-right:6px; opacity:0.5;"></i>Recentes</h3>
-                        <p class="section-copy">Os IDs mais usados aparecem aqui.</p>
+                    <!-- History -->
+                    <div class="history-preview glass-card">
+                        <div class="section-head">
+                            <div>
+                                <h3>Extrato</h3>
+                                <p class="section-copy">Toque em uma transação para detalhes.</p>
+                            </div>
+                            <div class="export-btns">
+                                <button class="small-btn" id="export-csv-btn" title="Baixar CSV" aria-label="Baixar extrato em CSV">
+                                    <i class="fas fa-download" aria-hidden="true"></i> CSV
+                                </button>
+                                <button class="small-btn" id="print-statement-btn" title="Imprimir / PDF" aria-label="Imprimir extrato">
+                                    <i class="fas fa-print" aria-hidden="true"></i> PDF
+                                </button>
+                            </div>
+                        </div>
+                        <div class="filter-chips">
+                            <button data-filter="all" onclick="filterHistory('all', event)" class="active-chip">Tudo</button>
+                            <button data-filter="in"  onclick="filterHistory('in', event)">Entrada</button>
+                            <button data-filter="out" onclick="filterHistory('out', event)">Saída</button>
+                            <button data-filter="tax" onclick="filterHistory('tax', event)">Impostos</button>
+                        </div>
+                        <ul id="transaction-list">
+                            <li class="skeleton-row" aria-hidden="true"></li>
+                            <li class="skeleton-row" aria-hidden="true"></li>
+                            <li class="skeleton-row" aria-hidden="true"></li>
+                        </ul>
                     </div>
-                </div>
-                <div id="recent-contacts" class="contact-list"></div>
-            </div>
+                </section>
 
-            <form id="transfer-form">
-                <div class="input-group">
-                    <i class="fas fa-user-tag"></i>
-                    <input type="text" id="dest-id" placeholder="ID do destinatário (ex: 12A34B)" required maxlength="6" style="text-transform:uppercase;">
-                </div>
-                <div class="input-group">
-                    <i class="fas fa-dollar-sign"></i>
-                    <input type="number" id="amount" placeholder="0,00" min="0.01" step="0.01" required>
-                </div>
-                <div class="info-box">
-                    <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
-                        <span>Taxa Municipal</span>
-                        <strong><span id="tax-display">0%</span></strong>
+                <!-- ── PIX (unificado) ───────────────────────────── -->
+                <section id="pix-section" class="hidden">
+                    <h2>Pix</h2>
+                    <div class="pix-tabs" role="tablist" aria-label="Modos Pix">
+                        <button id="pix-tab-send" role="tab" aria-selected="true" onclick="setPixTab('send')"><i class="fas fa-paper-plane" aria-hidden="true"></i> Enviar</button>
+                        <button id="pix-tab-charge" role="tab" aria-selected="false" onclick="setPixTab('charge')"><i class="fas fa-qrcode" aria-hidden="true"></i> Cobrar</button>
+                        <button id="pix-tab-pay" role="tab" aria-selected="false" onclick="setPixTab('pay')"><i class="fas fa-camera" aria-hidden="true"></i> Pagar</button>
                     </div>
-                    <div style="display:flex; justify-content:space-between;">
-                        <span>Total a debitar</span>
-                        <strong id="total-debit">R$ 0,00</strong>
+
+                    <!-- Enviar -->
+                    <div class="pix-panel" id="pix-send-panel">
+                        <div class="pix-contacts-col">
+                            <div class="glass-card">
+                                <div class="section-head">
+                                    <div>
+                                        <h3><i class="fas fa-star" style="font-size:0.8rem; margin-right:6px; color:var(--gold); opacity:0.8;" aria-hidden="true"></i>Favoritos</h3>
+                                        <p class="section-copy">Toque para preencher. Gerencie apelidos.</p>
+                                    </div>
+                                </div>
+                                <div id="favorite-contacts" class="contact-list"></div>
+                            </div>
+
+                            <div class="glass-card">
+                                <div class="section-head">
+                                    <div>
+                                        <h3><i class="fas fa-clock" style="font-size:0.8rem; margin-right:6px; opacity:0.5;" aria-hidden="true"></i>Recentes</h3>
+                                        <p class="section-copy">Os IDs mais usados aparecem aqui.</p>
+                                    </div>
+                                </div>
+                                <div id="recent-contacts" class="contact-list"></div>
+                            </div>
+                        </div>
+
+                        <form id="transfer-form" class="pix-form-card glass-card">
+                            <h3><i class="fas fa-paper-plane" style="color:var(--green); margin-right:6px; font-size:0.9rem;" aria-hidden="true"></i>Enviar Pix</h3>
+                            <div class="input-group">
+                                <i class="fas fa-user-tag" aria-hidden="true"></i>
+                                <input type="text" id="dest-id" placeholder="ID do destinatário (ex: 12A34B)" required maxlength="6" style="text-transform:uppercase;">
+                            </div>
+                            <div class="input-group">
+                                <i class="fas fa-dollar-sign" aria-hidden="true"></i>
+                                <input type="number" id="amount" placeholder="0,00" min="0.01" step="0.01" required>
+                            </div>
+                            <div class="info-box">
+                                <div class="row" style="margin-bottom:4px;">
+                                    <span>Taxa Municipal</span>
+                                    <strong><span id="tax-display">0%</span></strong>
+                                </div>
+                                <div class="row">
+                                    <span>Total a debitar</span>
+                                    <strong id="total-debit">R$ 0,00</strong>
+                                </div>
+                            </div>
+                            <button type="submit" style="margin-top:4px;">
+                                <i class="fas fa-paper-plane" style="margin-right:8px;" aria-hidden="true"></i>Continuar
+                            </button>
+                        </form>
                     </div>
-                </div>
-                <button type="submit" style="margin-top:4px;">
-                    <i class="fas fa-paper-plane" style="margin-right:8px;"></i>Continuar
-                </button>
-            </form>
-        </section>
 
-        <!-- ── LOANS ──────────────────────────────────────────── -->
-        <section id="loans-section" class="hidden">
-            <button class="back-btn" onclick="navTo('dashboard')"><i class="fas fa-chevron-left"></i> Voltar</button>
-            <h2>Crédito &amp; Empréstimo</h2>
+                    <!-- Cobrar -->
+                    <div class="pix-panel hidden" id="pix-charge-panel">
+                        <div class="glass-card">
+                            <div class="section-head">
+                                <div>
+                                    <h3><i class="fas fa-qrcode" style="color:var(--green); margin-right:6px; font-size:0.9rem;" aria-hidden="true"></i>Gerar Cobrança</h3>
+                                    <p class="section-copy">Informe o valor e mostre o QR para receber.</p>
+                                </div>
+                            </div>
+                            <div class="input-group">
+                                <i class="fas fa-dollar-sign" aria-hidden="true"></i>
+                                <input type="number" id="qr-amount" placeholder="Valor da cobrança" oninput="generateQR()">
+                            </div>
+                            <div class="qr-frame">
+                                <img id="qr-image" src="" style="display:none;" alt="QR Code">
+                            </div>
+                        </div>
+                    </div>
 
-            <div class="glass-card" style="background:linear-gradient(135deg,rgba(0,232,124,0.06),rgba(0,232,124,0.02)); border-color:rgba(0,232,124,0.2);">
-                <p style="font-size:0.72rem; text-transform:uppercase; letter-spacing:0.08em; color:var(--text-muted);">Limite Disponível</p>
-                <h1 id="loan-limit-display" style="font-family:'Syne',sans-serif; font-size:2rem; font-weight:800; letter-spacing:-0.02em; color:var(--green); margin:6px 0 4px;">R$ 0,00</h1>
-                <small id="loan-status-copy" style="font-size:0.78rem; color:var(--text-muted);">Análise de crédito em andamento.</small>
+                    <!-- Pagar -->
+                    <div class="pix-panel hidden" id="pix-pay-panel">
+                        <div class="glass-card">
+                            <div class="section-head">
+                                <div>
+                                    <h3><i class="fas fa-camera" style="color:var(--green); margin-right:6px; font-size:0.9rem;" aria-hidden="true"></i>Escanear QR</h3>
+                                    <p class="section-copy">Aponte a câmera para o QR de cobrança GlassBank.</p>
+                                </div>
+                            </div>
+                            <div id="reader"></div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- ── BILLS (Contas) ────────────────────────────── -->
+                <section id="bills-section" class="hidden">
+                    <div class="section-head">
+                        <div>
+                            <h2>Contas &amp; Serviços</h2>
+                            <p class="section-copy">Contas de água, luz e internet chegam a cada 3 dias.</p>
+                        </div>
+                    </div>
+                    <div id="open-bills-list" class="stack-list"></div>
+                    <h3 class="list-subtitle">Pagas recentemente</h3>
+                    <div id="paid-bills-list" class="stack-list"></div>
+                </section>
+
+                <!-- ── INVEST ────────────────────────────────────── -->
+                <section id="invest-section" class="hidden">
+                    <h2>Investimentos &amp; Poupança</h2>
+
+                    <div class="glass-card invest-card">
+                        <div class="section-head" style="margin-bottom:8px;">
+                            <h3><i class="fas fa-piggy-bank" style="color:var(--green); margin-right:6px; font-size:0.85rem;" aria-hidden="true"></i>Cofre (Poupança)</h3>
+                        </div>
+                        <p style="margin-bottom:12px;">Rende <strong style="color:var(--green);">0,5%</strong> a cada hora. Saldo protegido, não transferível.</p>
+                        <h1 class="stat-h1" id="savings-balance">R$ 0,00</h1>
+                        <div class="row-btn">
+                            <button onclick="savingsAction('deposit')">Guardar</button>
+                            <button onclick="savingsAction('withdraw')" class="secondary">Sacar</button>
+                        </div>
+                    </div>
+
+                    <div class="glass-card invest-card">
+                        <div class="section-head" style="margin-bottom:8px;">
+                            <h3><i class="fas fa-chart-line" style="color:var(--gold); margin-right:6px; font-size:0.85rem;" aria-hidden="true"></i>Bolsa de Valores</h3>
+                        </div>
+                        <p style="margin-bottom:8px; font-size:0.82rem;">Ação: <strong>GlassCoin (GLS)</strong></p>
+                        <div class="stock-display" style="margin-bottom:8px;">
+                            <h1 class="stat-h1" id="stock-price">R$ 0,00</h1>
+                            <span id="stock-trend" class="trend-up">▲ 0%</span>
+                        </div>
+                        <div id="stock-chart" class="sparkline" aria-hidden="true"></div>
+                        <p style="margin:12px 0 14px; font-size:0.82rem;">
+                            Carteira: <strong style="color:var(--gold);"><span id="user-stock-count">0</span> GLS</strong>
+                        </p>
+                        <div class="row-btn">
+                            <button onclick="tradeStock('buy')">
+                                <i class="fas fa-plus" style="margin-right:4px; font-size:0.8rem;" aria-hidden="true"></i>Comprar
+                            </button>
+                            <button onclick="tradeStock('sell')" class="danger-btn">
+                                <i class="fas fa-minus" style="margin-right:4px; font-size:0.8rem;" aria-hidden="true"></i>Vender
+                            </button>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- ── CREDIT (Crédito & Score) ──────────────────── -->
+                <section id="credit-section" class="hidden">
+                    <h2>Crédito &amp; Empréstimo</h2>
+
+                    <div class="glass-card score-card">
+                        <div class="section-head">
+                            <div>
+                                <h3><i class="fas fa-gauge-high" style="color:var(--blue); margin-right:6px; font-size:0.85rem;" aria-hidden="true"></i>Score de Crédito</h3>
+                                <p class="section-copy" id="score-caption">Quanto melhor o score, maior seu limite.</p>
+                            </div>
+                        </div>
+                        <div class="score-wrap">
+                            <div class="score-gauge">
+                                <svg viewBox="0 0 120 120" aria-hidden="true">
+                                    <circle class="gauge-track" cx="60" cy="60" r="52"></circle>
+                                    <circle class="gauge-fill" id="score-gauge-arc" cx="60" cy="60" r="52"></circle>
+                                </svg>
+                                <div class="score-num">
+                                    <strong id="score-value">-</strong>
+                                    <small id="score-band">-</small>
+                                </div>
+                            </div>
+                            <div id="score-factors" class="score-factors"></div>
+                        </div>
+                    </div>
+
+                    <div class="glass-card limit-card">
+                        <p class="stat-label">Limite Disponível</p>
+                        <h1 class="stat-h1 green" id="loan-limit-display">R$ 0,00</h1>
+                        <small id="loan-status-copy" class="stat-sub">Análise de crédito em andamento.</small>
+                    </div>
+
+                    <div class="glass-card debt-card">
+                        <p class="stat-label">Dívida Ativa</p>
+                        <h1 class="stat-h1 red" id="loan-debt-display">R$ 0,00</h1>
+                        <small id="loan-next-window" class="stat-sub">Sem restrições ativas.</small>
+                    </div>
+
+                    <div class="credit-actions">
+                        <div class="input-group">
+                            <i class="fas fa-hand-holding-usd" aria-hidden="true"></i>
+                            <input type="number" id="loan-amount-input" placeholder="Valor para solicitar">
+                        </div>
+                        <button onclick="takeLoan()">
+                            <i class="fas fa-plus-circle" style="margin-right:8px;" aria-hidden="true"></i>Solicitar Empréstimo
+                        </button>
+
+                        <div class="input-group">
+                            <i class="fas fa-wallet" aria-hidden="true"></i>
+                            <input type="number" id="loan-repay-input" placeholder="Valor para amortizar">
+                        </div>
+                        <button class="secondary" onclick="repayLoan()">
+                            <i class="fas fa-minus-circle" style="margin-right:8px;" aria-hidden="true"></i>Amortizar Dívida
+                        </button>
+                    </div>
+                </section>
+
+                <!-- ── NOTIFICATIONS ──────────────────────────────── -->
+                <section id="notifications-section" class="hidden">
+                    <div class="section-head">
+                        <div>
+                            <h2>Notificações</h2>
+                            <p class="section-copy">Recebidos, enviados, impostos e juros.</p>
+                        </div>
+                        <button class="secondary small-btn" onclick="markAllNotificationsRead()">
+                            <i class="fas fa-check-double" style="margin-right:4px;" aria-hidden="true"></i>Marcar tudo
+                        </button>
+                    </div>
+                    <div id="notifications-list" class="stack-list">
+                        <div class="skeleton-row" aria-hidden="true"></div>
+                        <div class="skeleton-row" aria-hidden="true"></div>
+                    </div>
+                </section>
+
+                <!-- ── TRANSPARENCY ───────────────────────────────── -->
+                <section id="transparency-section" class="hidden">
+                    <h2>Portal da Transparência</h2>
+
+                    <div class="glass-card transparent-header">
+                        <p class="stat-label">Total Arrecadado em Impostos</p>
+                        <h1 class="stat-h1 green" id="total-tax-collected">R$ 0,00</h1>
+                        <small id="total-tax-visibility-note" class="section-copy hidden">Total visível para todos.</small>
+                        <div class="progress-bar-container">
+                            <div class="progress-fill" style="width:100%"></div>
+                        </div>
+                    </div>
+
+                    <h3>Votação de Orçamento</h3>
+                    <p class="section-copy">Se a meta de votos for atingida, a prefeitura investe automaticamente.</p>
+                    <div id="polls-list"></div>
+                </section>
+
+                <!-- ── ADMIN PANEL ────────────────────────────────── -->
+                <section id="admin-panel-section" class="hidden">
+                    <h2><i class="fas fa-shield-alt" style="margin-right:8px; font-size:1rem; opacity:0.7;" aria-hidden="true"></i>Gestão Municipal</h2>
+
+                    <div class="balance-card admin-card glass-card">
+                        <p>Cofre da Prefeitura</p>
+                        <h1 id="city-hall-balance">R$ 0,00</h1>
+                    </div>
+
+                    <div class="admin-tools">
+
+                        <!-- Tax slider -->
+                        <div class="tool-item">
+                            <label><i class="fas fa-percentage" style="margin-right:6px;" aria-hidden="true"></i>Ajuste de Imposto</label>
+                            <div class="slider-container">
+                                <input type="range" id="tax-slider" min="0" max="15" step="0.5" value="2">
+                                <span id="tax-value-display">2%</span>
+                            </div>
+                            <p id="tax-psychology" class="tax-status-green">Sistema Saudável</p>
+                            <button onclick="updateGlobalTax()" style="margin-top:10px;">
+                                <i class="fas fa-check" style="margin-right:6px;" aria-hidden="true"></i>Aplicar Nova Taxa
+                            </button>
+                        </div>
+
+                        <!-- Daily reward -->
+                        <div class="tool-item">
+                            <label><i class="fas fa-gift" style="margin-right:6px;" aria-hidden="true"></i>Valor do Auxílio Diário</label>
+                            <div class="row">
+                                <input type="number" id="admin-daily-reward" placeholder="Ex: 50">
+                                <button onclick="updateDailyReward()" style="width:auto; margin:0; padding:13px 16px;">Salvar</button>
+                            </div>
+                        </div>
+
+                        <!-- Create poll -->
+                        <div class="tool-item">
+                            <label><i class="fas fa-vote-yea" style="margin-right:6px;" aria-hidden="true"></i>Criar Enquete de Investimento</label>
+                            <input type="text"   id="poll-title"  placeholder="Ex: Reforma do Hospital">
+                            <input type="number" id="poll-cost"   placeholder="Custo (R$)">
+                            <input type="number" id="poll-target" placeholder="Meta de Votos">
+                            <button onclick="createPoll()">
+                                <i class="fas fa-plus" style="margin-right:6px;" aria-hidden="true"></i>Publicar Enquete
+                            </button>
+                            <p class="section-copy" style="margin-top:6px;">As enquetes ficam registradas no cofre para evitar bloqueio de permissão.</p>
+                        </div>
+
+                        <!-- Tax visibility -->
+                        <div class="tool-item">
+                            <label><i class="fas fa-eye" style="margin-right:6px;" aria-hidden="true"></i>Visibilidade da Arrecadação</label>
+                            <p id="tax-visibility-status" class="section-copy">Total visível para todos no portal.</p>
+                            <button id="toggle-tax-visibility-btn" class="secondary" onclick="togglePublicTaxVisibility()" style="margin-top:8px;">
+                                Ocultar total público
+                            </button>
+                        </div>
+
+                        <!-- Welfare control -->
+                        <div class="tool-item">
+                            <label><i class="fas fa-user-shield" style="margin-right:6px;" aria-hidden="true"></i>Controle de Auxílio</label>
+                            <input type="text" id="welfare-target-id" placeholder="ID da conta (ex: 12A34B)" maxlength="6" style="text-transform:uppercase;">
+                            <select id="welfare-target-state">
+                                <option value="allow">Liberar auxílio</option>
+                                <option value="block">Bloquear auxílio</option>
+                            </select>
+                            <button onclick="updateWelfareEligibility()">Aplicar Regra</button>
+                            <p id="welfare-admin-status" class="section-copy" style="margin-top:4px;">Informe o ID curto para liberar ou bloquear o benefício.</p>
+                        </div>
+
+                        <!-- Monitor -->
+                        <div class="tool-item">
+                            <label><i class="fas fa-chart-bar" style="margin-right:6px;" aria-hidden="true"></i>Monitoramento Rápido</label>
+                            <div class="admin-monitor-grid">
+                                <div class="monitor-box">
+                                    <strong>Últimas 50 Transações</strong>
+                                    <div id="admin-transactions-list" class="stack-list compact-list"></div>
+                                </div>
+                                <div class="monitor-box">
+                                    <strong>Falhas Recentes</strong>
+                                    <div id="admin-failures-list" class="stack-list compact-list"></div>
+                                </div>
+                                <div class="monitor-box">
+                                    <strong>Alertas de Saldo</strong>
+                                    <div id="admin-alerts-list" class="stack-list compact-list"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
             </div>
+        </div>
 
-            <div class="glass-card" style="background:rgba(255,77,106,0.04); border-color:rgba(255,77,106,0.15);">
-                <p style="font-size:0.72rem; text-transform:uppercase; letter-spacing:0.08em; color:var(--text-muted);">Dívida Ativa</p>
-                <h1 id="loan-debt-display" style="font-family:'Syne',sans-serif; font-size:2rem; font-weight:800; letter-spacing:-0.02em; color:var(--red); margin:6px 0 4px;">R$ 0,00</h1>
-                <small id="loan-next-window" style="font-size:0.78rem; color:var(--text-muted);">Sem restrições ativas.</small>
-            </div>
+        <!-- ── BOTTOM NAV (mobile) ──────────────────────────────── -->
+        <nav class="bottom-nav" id="bottom-nav" aria-label="Navegação rápida">
+            <button data-nav="dashboard"><i class="fas fa-house" aria-hidden="true"></i><span>Início</span></button>
+            <button data-nav="pix"><i class="fas fa-paper-plane" aria-hidden="true"></i><span>Pix</span></button>
+            <button data-nav="invest"><i class="fas fa-chart-line" aria-hidden="true"></i><span>Investir</span></button>
+            <button data-nav="bills"><i class="fas fa-file-invoice-dollar" aria-hidden="true"></i><span>Contas</span></button>
+            <button data-nav="credit"><i class="fas fa-hand-holding-usd" aria-hidden="true"></i><span>Crédito</span></button>
+        </nav>
 
-            <div class="input-group">
-                <i class="fas fa-hand-holding-usd"></i>
-                <input type="number" id="loan-amount-input" placeholder="Valor para solicitar">
-            </div>
-            <button onclick="takeLoan()">
-                <i class="fas fa-plus-circle" style="margin-right:8px;"></i>Solicitar Empréstimo
-            </button>
-
-            <div class="input-group">
-                <i class="fas fa-wallet"></i>
-                <input type="number" id="loan-repay-input" placeholder="Valor para amortizar">
-            </div>
-            <button class="secondary" onclick="repayLoan()">
-                <i class="fas fa-minus-circle" style="margin-right:8px;"></i>Amortizar Dívida
-            </button>
-        </section>
-
-        <!-- ── QR GEN ──────────────────────────────────────────── -->
-        <section id="qr-gen-section" class="hidden">
-            <button class="back-btn" onclick="navTo('dashboard')"><i class="fas fa-chevron-left"></i> Voltar</button>
-            <h2>Gerar Cobrança</h2>
-            <div class="input-group">
-                <i class="fas fa-dollar-sign"></i>
-                <input type="number" id="qr-amount" placeholder="Valor da cobrança" oninput="generateQR()">
-            </div>
-            <div class="qr-frame">
-                <img id="qr-image" src="" style="display:none;" alt="QR Code">
-            </div>
-        </section>
-
-        <!-- ── QR SCAN ─────────────────────────────────────────── -->
-        <section id="qr-scan-section" class="hidden">
-            <button class="back-btn" onclick="navTo('dashboard')"><i class="fas fa-chevron-left"></i> Voltar</button>
-            <h2>Escanear QR</h2>
-            <div id="reader"></div>
-        </section>
-
-    </div><!-- /app-container -->
+    </div><!-- /app-shell -->
 
     <script type="module" src="script.js"></script>
 </body>

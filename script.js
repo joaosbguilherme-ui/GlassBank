@@ -1,6 +1,6 @@
-﻿import { initializeApp } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-app.js";
-import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, onAuthStateChanged, signOut, EmailAuthProvider, reauthenticateWithCredential, updatePassword, sendPasswordResetEmail } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-auth.js";
-import { getFirestore, doc, setDoc, updateDoc, collection, query, where, onSnapshot, runTransaction, serverTimestamp, orderBy, limit, getDocs, increment, addDoc, deleteField } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-firestore.js";
+﻿import { initializeApp } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-app.js";
+import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, onAuthStateChanged, signOut, EmailAuthProvider, reauthenticateWithCredential, updatePassword, sendPasswordResetEmail } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-auth.js";
+import { getFirestore, doc, setDoc, updateDoc, collection, query, where, onSnapshot, runTransaction, serverTimestamp, orderBy, limit, getDocs, increment, addDoc, deleteField } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-firestore.js";
 
 // CONFIGURAÇÃO FIREBASE (MANTENHA A SUA)
 const firebaseConfig = {
@@ -27,6 +27,9 @@ let activePinAuthorization = null;
 let currentTransactions = [];
 let stockMarketInitialized = false;
 let currentStockPrice = 0;
+let currentStockHistory = [];
+let stockFallbackMode = false;
+let stockTickTimer = null;
 let unsubUser = null;
 let unsubTransactions = null;
 let unsubCity = null;
@@ -41,6 +44,10 @@ let currentRiskUsers = [];
 let currentPublicTaxHidden = false;
 let currentTotalTaxCollected = 0;
 let activeHistoryFilter = 'all';
+let activeSparkRange = 7;
+let activePixTab = 'send';
+let transactionsLoaded = false;
+let activeSavingsMode = 'deposit';
 
 const CITY_HALL_ID = "vTFqk1ZX8NfwzuE4ZmJKXnfoI9r1";
 const QR_PREFIX = "GBANK";
@@ -60,6 +67,27 @@ const PIN_MAX_FAILED_ATTEMPTS = 5;
 const PIN_LOCK_MINUTES = 15;
 const PIN_AUTH_WINDOW_MS = 60 * 1000;
 const WEAK_PINS = new Set(['0000', '1111', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999', '1234', '4321', '123456', '654321']);
+const STARTING_CASH_BALANCE = 200;
+const CASHOUT_DAILY_LIMIT = 1000;
+const CASHOUT_FEE_RATE = 0.01;
+const CASHOUT_FEE_MIN = 1;
+const CASHOUT_FEE_MAX = 5;
+const BILL_CYCLE_MS = 3 * 24 * 60 * 60 * 1000;
+const BILL_DUE_MS = 48 * 60 * 60 * 1000;
+const BILL_LATE_DAILY_RATE = 0.02;
+const BILL_LATE_MAX_RATE = 0.10;
+const MAX_BILLS_STORED = 12;
+const STOCK_TICK_MS = 60 * 1000;
+const STOCK_MIN_PRICE = 5;
+const STOCK_MAX_PRICE = 500;
+const STOCK_HISTORY_LIMIT = 120;
+const THEME_STORAGE_KEY = 'glassbank:theme';
+const BILL_TYPES = {
+    water:    { label: 'Água',    icon: 'droplet',   min: 40, max: 90 },
+    power:    { label: 'Luz',     icon: 'bolt',      min: 60, max: 140 },
+    internet: { label: 'Internet', icon: 'wifi',     min: 80, max: 80 }
+};
+const GAUGE_CIRCUMFERENCE = 2 * Math.PI * 52;
 
 const toErrorMessage = (error) => {
     if (typeof error === 'string') return error;
@@ -653,7 +681,9 @@ function getLoanState(userData = currentUser) {
     const loanWindowStartedAtMs = timestampToMillis(userData?.loanWindowStartedAt, 0);
     const windowActive = loanWindowStartedAtMs > 0 && (now - loanWindowStartedAtMs) < (LOAN_WINDOW_HOURS * 60 * 60 * 1000);
     const borrowedThisWindow = windowActive ? Number(userData?.borrowedThisWindow || 0) : 0;
-    const dynamicLimit = Math.min(LOAN_LIMIT, Math.max(500, 1000 + Math.max(0, balance) * 0.5));
+    const score = computeCreditScore(userData);
+    const scoreCeiling = LOAN_LIMIT * (0.5 + score.total / 1000);
+    const dynamicLimit = Math.min(scoreCeiling, Math.max(500, 1000 + Math.max(0, balance) * 0.5));
     const remainingWindowLimit = Math.max(0, LOAN_WINDOW_LIMIT - borrowedThisWindow);
     const availableLimit = accountAgeMinutes < LOAN_MIN_ACCOUNT_MINUTES || cooldownRemainingMs > 0 || loanOutstanding > 0
         ? 0
@@ -667,6 +697,7 @@ function getLoanState(userData = currentUser) {
         dynamicLimit,
         loanOutstanding,
         remainingWindowLimit,
+        score,
         windowActive
     };
 }
@@ -700,6 +731,13 @@ async function ensureUserDefaults(uid, data) {
     if (!('lastFailedPinAt' in data)) patch.lastFailedPinAt = null;
     if (!('lastPinChangeAt' in data)) patch.lastPinChangeAt = null;
     if (!('welfareEligible' in data)) patch.welfareEligible = true;
+    if (!Number.isFinite(Number(data.cashBalance))) patch.cashBalance = 0;
+    if (!Array.isArray(data.bills)) patch.bills = [];
+    if (!Number.isFinite(Number(data.billsPaidOnTime))) patch.billsPaidOnTime = 0;
+    if (!Number.isFinite(Number(data.billsPaidLate))) patch.billsPaidLate = 0;
+    if (!data || typeof data.dailyCashout !== 'object' || data.dailyCashout === null) {
+        patch.dailyCashout = { dateKey: '', total: 0 };
+    }
     if (uid === CITY_HALL_ID) {
         if (!('hidePublicTaxTotal' in data)) patch.hidePublicTaxTotal = false;
         if (!Array.isArray(data.investmentPolls)) patch.investmentPolls = [];
@@ -730,6 +768,8 @@ function cleanupListeners() {
     currentNotifications = [];
     currentPublicTaxHidden = false;
     currentTotalTaxCollected = 0;
+    currentStockHistory = [];
+    transactionsLoaded = false;
 }
 
 // --- SONS & UI ---
@@ -745,20 +785,6 @@ const showToast = (msg, type = 'success') => {
     if (!container) return;
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
-    toast.style.cssText = `
-        background: ${type === 'error' ? 'rgba(255,77,106,0.12)' : 'rgba(0,232,124,0.10)'};
-        color: ${type === 'error' ? '#ff6b85' : '#00e87c'};
-        border: 1px solid ${type === 'error' ? 'rgba(255,77,106,0.35)' : 'rgba(0,232,124,0.35)'};
-        padding: 13px 16px;
-        margin-bottom: 8px;
-        border-radius: 12px;
-        box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-        font-family: 'Figtree', sans-serif;
-        font-size: 0.88rem;
-        font-weight: 500;
-        backdrop-filter: blur(12px);
-        line-height: 1.4;
-    `;
     toast.innerText = toErrorMessage(msg);
     container.appendChild(toast);
     setTimeout(() => toast.remove(), 4000);
@@ -768,17 +794,47 @@ function navTo(sectionId) {
     playSound('click');
     document.querySelectorAll('section').forEach(s => s.classList.remove('active-section'));
     document.querySelectorAll('section').forEach(s => s.classList.add('hidden'));
-    
+
     const target = document.getElementById(sectionId + '-section');
     if(target) {
         target.classList.remove('hidden');
         target.classList.add('active-section');
     }
-    
-    if (sectionId === 'qr-scan') startScanner();
+
+    document.querySelectorAll('[data-nav]').forEach((btn) => {
+        btn.classList.toggle('active', btn.dataset.nav === sectionId);
+    });
+
+    if (sectionId === 'pix' && activePixTab === 'pay') startScanner();
     else stopScanner();
+
+    const container = document.getElementById('app-container');
+    if (container) container.scrollTop = 0;
 }
 window.navTo = navTo;
+
+function setPixTab(tab) {
+    activePixTab = ['send', 'charge', 'pay'].includes(tab) ? tab : 'send';
+    document.querySelectorAll('.pix-panel').forEach((panel) => panel.classList.add('hidden'));
+    const panel = document.getElementById(`pix-${activePixTab}-panel`);
+    if (panel) panel.classList.remove('hidden');
+
+    ['send', 'charge', 'pay'].forEach((key) => {
+        const btn = document.getElementById(`pix-tab-${key}`);
+        if (btn) {
+            btn.classList.toggle('active', key === activePixTab);
+            btn.setAttribute('aria-selected', key === activePixTab ? 'true' : 'false');
+        }
+    });
+
+    if (activePixTab === 'pay' && !document.getElementById('pix-section')?.classList.contains('hidden')) {
+        startScanner();
+    } else {
+        stopScanner();
+    }
+    if (activePixTab === 'charge') generateQR();
+}
+window.setPixTab = setPixTab;
 
 function closeModal(id) {
     const modal = document.getElementById(id);
@@ -792,8 +848,23 @@ function closeModal(id) {
     if (id === 'settings-modal') {
         clearSettingsSecretInputs();
     }
+    if (id === 'savings-modal') {
+        const amountInput = document.getElementById('savings-modal-amount');
+        if (amountInput) amountInput.value = '';
+    }
+    if (id === 'cash-modal') {
+        const amountInput = document.getElementById('cash-amount');
+        if (amountInput) amountInput.value = '';
+    }
 }
 window.closeModal = closeModal;
+
+function closeTopModal() {
+    const openModals = document.querySelectorAll('.modal-overlay:not(.hidden)');
+    if (!openModals.length) return false;
+    closeModal(openModals[openModals.length - 1].id);
+    return true;
+}
 
 function openSettingsModal() {
     if (!currentUser) return;
@@ -853,10 +924,15 @@ authForm.addEventListener('submit', async (e) => {
                 name: name, email: email, role: role, pinHash, pinSalt,
                 shortId: shortId,
                 balance: 1000.00,
+                cashBalance: STARTING_CASH_BALANCE,
                 savingsBalance: 0,
                 stocks: { glasscoin: 0 },
                 contacts: [],
                 readNotificationIds: [],
+                bills: [],
+                billsPaidOnTime: 0,
+                billsPaidLate: 0,
+                dailyCashout: { dateKey: '', total: 0 },
                 failedPinAttempts: 0,
                 pinLockedUntil: null,
                 lastFailedPinAt: null,
@@ -907,15 +983,21 @@ window.requestPasswordReset = async () => {
 
 onAuthStateChanged(auth, (user) => {
     if (user) {
+        document.body.classList.remove('logged-out');
         document.getElementById('auth-section').classList.remove('active-section');
         navTo('dashboard');
+        setPixTab('send');
         initializeUser(user.uid);
     } else {
+        document.body.classList.add('logged-out');
         cleanupListeners();
         stopScanner();
         navTo('auth');
         currentUser = null;
         currentTransactions = [];
+        transactionsLoaded = false;
+        activePixTab = 'send';
+        resetSkeletons();
     }
 });
 
@@ -940,11 +1022,14 @@ function initializeUser(uid) {
         const role = currentUser.role || 'user';
         const balance = Number(currentUser.balance || 0);
 
-        document.getElementById('user-name').innerText = userName;
+        removeSkeleton('user-name', userName);
+        removeSkeleton('user-balance', formatMoney(balance));
+        removeSkeleton('user-short-id', currentUser.shortId || '---');
         document.getElementById('user-role').innerText = currentUser.uid === CITY_HALL_ID ? 'Prefeitura' : role === 'admin' ? 'Admin' : role === 'merchant' ? 'Comércio' : 'Cidadão';
         document.getElementById('user-balance').innerText = formatMoney(balance);
         document.getElementById('user-short-id').innerText = currentUser.shortId || '---';
         document.getElementById('user-avatar').src = `https://ui-avatars.com/api/?name=${encodeURIComponent(userName)}&background=random&color=fff`;
+        fillText('user-cash-balance', formatMoney(currentUser.cashBalance || 0));
 
         document.getElementById('savings-balance').innerText = formatMoney(currentUser.savingsBalance || 0);
         document.getElementById('user-stock-count').innerText = Number(currentUser.stocks?.glasscoin || 0);
@@ -960,13 +1045,21 @@ function initializeUser(uid) {
         renderNotifications();
         renderPasswordSecurity();
         renderPinSecurity();
+        renderBills();
+        ensureBills(uid, currentUser).catch((error) => {
+            logSystemFailure('ensureBills', error, { userId: uid }).catch(() => {});
+        });
+        renderBalanceChart();
 
+        const sidebarAdminBtn = document.getElementById('sidebar-admin-btn');
         if (hasGovernmentAccess()) {
             document.getElementById('admin-btn').classList.remove('hidden');
+            if (sidebarAdminBtn) sidebarAdminBtn.classList.remove('hidden');
             initAdminPanel();
             initAdminMonitor();
         } else {
             document.getElementById('admin-btn').classList.add('hidden');
+            if (sidebarAdminBtn) sidebarAdminBtn.classList.add('hidden');
             if (unsubAdminTransactions) unsubAdminTransactions();
             if (unsubAdminLogs) unsubAdminLogs();
             if (unsubRiskUsers) unsubRiskUsers();
@@ -1059,27 +1152,29 @@ async function processInterests(uid) {
     if (Number(currentUser.savingsBalance || 0) > 0 && savingsIntervals > 0) {
         const currentSavings = Number(currentUser.savingsBalance || 0);
         const newSavings = currentSavings * Math.pow(1.005, savingsIntervals);
-        const yieldAmount = newSavings - currentSavings;
+        const yieldAmount = Number((newSavings - currentSavings).toFixed(2));
 
-        await updateDoc(doc(db, "users", uid), {
-            savingsBalance: newSavings,
-            lastInterestDate: serverTimestamp(),
-            lastSavingsInterestDate: serverTimestamp()
+        await runTransaction(db, async (t) => {
+            const userRef = doc(db, "users", uid);
+            t.update(userRef, {
+                savingsBalance: Number(newSavings.toFixed(2)),
+                lastInterestDate: serverTimestamp(),
+                lastSavingsInterestDate: serverTimestamp()
+            });
+            const txRef = doc(collection(db, "transactions"));
+            t.set(txRef, buildTransactionRecord(txRef.id, {
+                senderId: 'SYSTEM',
+                senderName: 'Cofre Rendimento',
+                senderShortId: 'SYSTEM',
+                receiverId: uid,
+                receiverName: currentUser.name,
+                receiverShortId: currentUser.shortId || uid,
+                amount: yieldAmount,
+                type: 'interest_yield',
+                method: 'Sistema',
+                participants: [uid]
+            }));
         });
-
-        const txRef = doc(collection(db, "transactions"));
-        await setDoc(txRef, buildTransactionRecord(txRef.id, {
-            senderId: 'SYSTEM',
-            senderName: 'Cofre Rendimento',
-            senderShortId: 'SYSTEM',
-            receiverId: uid,
-            receiverName: currentUser.name,
-            receiverShortId: currentUser.shortId || uid,
-            amount: yieldAmount,
-            type: 'interest_yield',
-            method: 'Sistema',
-            participants: [uid]
-        }));
         showToast(`Rendimento da Poupança: +${formatMoney(yieldAmount)}`);
     }
 }
@@ -1096,6 +1191,9 @@ function syncSystemData() {
         currentTaxRate = Number(data.customTax || 0.02);
         dailyRewardValue = Number(data.dailyRewardAmount || 50);
         currentTotalTaxCollected = Number(data.totalTaxCollected || 0);
+
+        applyStockState(normalizeStockState(data.stock));
+        if (!stockFallbackMode) maybeAdvanceStock().catch(() => {});
 
         document.getElementById('city-hall-balance').innerText = formatMoney(data.balance || 0);
         renderTaxVisibility(currentTotalTaxCollected, Boolean(data.hidePublicTaxTotal));
@@ -1116,12 +1214,39 @@ function syncSystemData() {
 }
 
 // --- INVESTIMENTOS ---
-// 1. Poupança
-window.savingsAction = async (type) => {
+// 1. Poupança (Cofre) — modal dedicado em vez de prompt()
+window.savingsAction = (type) => {
     if (!currentUser) return;
-    let amount = prompt(`Valor para ${type === 'deposit' ? 'Guardar' : 'Sacar'}:`);
-    amount = toNumber(amount);
-    if (!Number.isFinite(amount) || amount <= 0) return;
+    activeSavingsMode = type === 'withdraw' ? 'withdraw' : 'deposit';
+    const modal = document.getElementById('savings-modal');
+    const amountInput = document.getElementById('savings-modal-amount');
+    const labelEl = document.getElementById('savings-modal-label');
+    const confirmBtn = document.getElementById('savings-modal-confirm');
+    const limitEl = document.getElementById('savings-modal-limit');
+    if (!modal || !amountInput || !labelEl || !confirmBtn) return;
+
+    fillText('savings-modal-balance', `Saldo no cofre: ${formatMoney(currentUser.savingsBalance || 0)}`);
+    labelEl.innerText = activeSavingsMode === 'deposit' ? 'Valor para guardar' : 'Valor para sacar do cofre';
+    confirmBtn.innerText = activeSavingsMode === 'deposit' ? 'Guardar' : 'Sacar';
+    if (limitEl) {
+        limitEl.innerText = activeSavingsMode === 'deposit'
+            ? `Disponível em conta: ${formatMoney(currentUser.balance || 0)}`
+            : `Disponível no cofre: ${formatMoney(currentUser.savingsBalance || 0)}`;
+    }
+    amountInput.value = '';
+    modal.classList.remove('hidden');
+    setTimeout(() => amountInput.focus(), 50);
+};
+
+window.confirmSavingsAction = async () => {
+    if (!currentUser) return;
+    const amountInput = document.getElementById('savings-modal-amount');
+    const type = activeSavingsMode;
+    let amount = toNumber(amountInput?.value);
+    if (!Number.isFinite(amount) || amount <= 0) {
+        showToast('Informe um valor válido.', 'error');
+        return;
+    }
 
     try {
         await runTransaction(db, async (t) => {
@@ -1139,14 +1264,45 @@ window.savingsAction = async (type) => {
                     balance: Number((balance - amount).toFixed(2)),
                     savingsBalance: Number((savingsBalance + amount).toFixed(2))
                 });
+                const txRef = doc(collection(db, "transactions"));
+                t.set(txRef, buildTransactionRecord(txRef.id, {
+                    senderId: currentUser.uid,
+                    senderName: currentUser.name,
+                    senderShortId: currentUser.shortId || currentUser.uid,
+                    receiverId: 'SYSTEM',
+                    receiverName: 'Cofre GlassBank',
+                    receiverShortId: 'SAVE',
+                    amount,
+                    tax: 0,
+                    total: amount,
+                    type: 'savings_deposit',
+                    method: 'Cofre',
+                    participants: [currentUser.uid]
+                }));
             } else {
                 if (savingsBalance < amount) throw new Error("Saldo no cofre insuficiente");
                 t.update(userRef, {
                     balance: Number((balance + amount).toFixed(2)),
                     savingsBalance: Number((savingsBalance - amount).toFixed(2))
                 });
+                const txRef = doc(collection(db, "transactions"));
+                t.set(txRef, buildTransactionRecord(txRef.id, {
+                    senderId: 'SYSTEM',
+                    senderName: 'Cofre GlassBank',
+                    senderShortId: 'SAVE',
+                    receiverId: currentUser.uid,
+                    receiverName: currentUser.name,
+                    receiverShortId: currentUser.shortId || currentUser.uid,
+                    amount,
+                    tax: 0,
+                    total: amount,
+                    type: 'savings_withdraw',
+                    method: 'Cofre',
+                    participants: [currentUser.uid]
+                }));
             }
         });
+        closeModal('savings-modal');
         showToast("Operação no Cofre realizada!");
     } catch (e) {
         logSystemFailure('savingsAction', e, { userId: currentUser?.uid, type, amount }).catch(() => {});
@@ -1154,54 +1310,136 @@ window.savingsAction = async (type) => {
     }
 };
 
-// 2. Bolsa de Valores (Simulada no Cliente para todos verem igual, idealmente seria server-side)
-// Para simulação simples: O preço é baseado no minuto atual (Determinístico) para todos verem o mesmo.
+// 2. Bolsa de Valores — preço persistido no documento da Prefeitura.
+// Qualquer cliente conectado pode avançar o preço (tick de 60s) via
+// runTransaction: o primeiro a gravar vence e os demais apenas leem.
+function normalizeStockState(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const price = Number(raw.price);
+    if (!Number.isFinite(price) || price <= 0) return null;
+    const history = Array.isArray(raw.history)
+        ? raw.history
+            .map((point) => ({ t: Number(point?.t || 0), p: Number(point?.p || 0) }))
+            .filter((point) => point.t > 0 && Number.isFinite(point.p) && point.p > 0)
+            .slice(-STOCK_HISTORY_LIMIT)
+        : [];
+    return { price, updatedAtMs: Number(raw.updatedAtMs || 0), history };
+}
+
+function deterministicStockPrice(now = Date.now()) {
+    // Reserva: mesma fórmula para todos os clientes caso o Firestore
+    // recuse a escrita do tick no documento da Prefeitura.
+    const timeSeed = Math.floor(now / 10000);
+    return 50 + Math.sin(timeSeed) * 20;
+}
+
+function applyStockState(stockState) {
+    if (!stockState) return;
+    currentStockPrice = stockState.price;
+    currentStockHistory = stockState.history.length ? stockState.history : [{ t: stockState.updatedAtMs || Date.now(), p: stockState.price }];
+    renderStockPanel();
+}
+
+async function maybeAdvanceStock() {
+    if (!currentUser || stockFallbackMode) return;
+    const lastUpdateMs = currentStockHistory.length
+        ? currentStockHistory[currentStockHistory.length - 1].t
+        : 0;
+    if (Date.now() - lastUpdateMs < STOCK_TICK_MS) return;
+
+    try {
+        await runTransaction(db, async (t) => {
+            const cityRef = doc(db, "users", CITY_HALL_ID);
+            const cityDoc = await t.get(cityRef);
+            if (!cityDoc.exists()) return;
+
+            const cityData = cityDoc.data();
+            const stored = normalizeStockState(cityData.stock);
+            const now = Date.now();
+
+            if (!stored) {
+                t.update(cityRef, {
+                    stock: { price: 100, updatedAtMs: now, history: [{ t: now, p: 100 }] }
+                });
+                return;
+            }
+
+            if (now - stored.updatedAtMs < STOCK_TICK_MS) return;
+
+            const drift = (randomFraction() - 0.5) * 0.08; // ±4% por tick
+            const nextPrice = Number(Math.min(STOCK_MAX_PRICE, Math.max(STOCK_MIN_PRICE, stored.price * (1 + drift))).toFixed(2));
+            const history = [...stored.history, { t: now, p: nextPrice }].slice(-STOCK_HISTORY_LIMIT);
+            t.update(cityRef, {
+                stock: { price: nextPrice, updatedAtMs: now, history }
+            });
+        });
+    } catch (e) {
+        // Sem permissão de escrita no cofre: ativa o modo reserva local.
+        stockFallbackMode = true;
+        logSystemFailure('maybeAdvanceStock', e, { userId: currentUser?.uid }).catch(() => {});
+    }
+}
+
+// Fração pseudo-aleatória determinística por janela de tick, para que
+// clientes concorrentes cheguem ao mesmo preço no mesmo tick.
+function randomFraction() {
+    const seed = Math.floor(Date.now() / STOCK_TICK_MS);
+    const x = Math.sin(seed * 12.9898) * 43758.5453;
+    return x - Math.floor(x);
+}
+
+function renderStockPanel() {
+    const priceEl = document.getElementById('stock-price');
+    if (!priceEl) return;
+
+    const fallbackActive = stockFallbackMode || !currentStockPrice;
+    const price = fallbackActive ? deterministicStockPrice() : currentStockPrice;
+
+    priceEl.innerText = formatMoney(price);
+
+    const trendEl = document.getElementById('stock-trend');
+    if (trendEl) {
+        const history = fallbackActive ? [] : currentStockHistory;
+        const previous = history.length > 1 ? history[history.length - 2].p : (history.length === 1 ? history[0].p : price);
+        const variationPercent = previous ? ((price - previous) / previous) * 100 : 0;
+        if (variationPercent >= 0) {
+            trendEl.innerHTML = `▲ ${Math.abs(variationPercent).toFixed(2)}%`;
+            trendEl.className = 'trend-up';
+        } else {
+            trendEl.innerHTML = `▼ ${Math.abs(variationPercent).toFixed(2)}%`;
+            trendEl.className = 'trend-down';
+        }
+    }
+
+    const chartEl = document.getElementById('stock-chart');
+    if (chartEl) {
+        const points = (fallbackActive ? [] : currentStockHistory).map((point) => ({ t: point.t, v: point.p }));
+        renderSparkline(chartEl, points, true);
+    }
+}
+
 function initStockMarket() {
     if (stockMarketInitialized) return;
     stockMarketInitialized = true;
 
-    const updateStock = () => {
-        const now = Date.now();
-        // Algoritmo pseudo-aleatório baseado no tempo (preço muda a cada 10s)
-        const timeSeed = Math.floor(now / 10000); 
-        const basePrice = 50; 
-        const variation = Math.sin(timeSeed) * 20; // Oscila entre -20 e +20
-        const price = basePrice + variation;
-        
-        const priceEl = document.getElementById('stock-price');
-        if (!priceEl) return;
-        const oldPrice = toNumber(priceEl.innerText.replace('R$ ', '')) || price;
-        
-        priceEl.innerText = formatMoney(price);
-        
-        const trendEl = document.getElementById('stock-trend');
-        if (!trendEl) return;
-        const variationPercent = oldPrice ? (Math.abs((price - oldPrice) / oldPrice) * 100) : 0;
-        if (price > oldPrice) {
-            trendEl.innerHTML = `▲ ${variationPercent.toFixed(2)}%`;
-            trendEl.className = "trend-up";
-            trendEl.style.color = "var(--accent)";
-        } else {
-            trendEl.innerHTML = `▼ ${variationPercent.toFixed(2)}%`;
-            trendEl.className = "trend-down";
-            trendEl.style.color = "var(--danger)";
-        }
-        
-        currentStockPrice = price;
-    };
-
-    updateStock();
-    setInterval(updateStock, 5000);
+    renderStockPanel();
+    maybeAdvanceStock();
+    if (stockTickTimer) clearInterval(stockTickTimer);
+    stockTickTimer = setInterval(() => {
+        maybeAdvanceStock();
+        renderStockPanel();
+    }, 15000);
 }
 
 window.tradeStock = async (action) => {
     if (!currentUser) return;
-    const price = currentStockPrice;
-    if (!price) return;
-    
+    const displayedPrice = stockFallbackMode || !currentStockPrice ? deterministicStockPrice() : currentStockPrice;
+    if (!displayedPrice) return;
+
     try {
         await runTransaction(db, async (t) => {
             const userRef = doc(db, "users", currentUser.uid);
+            const cityRef = doc(db, "users", CITY_HALL_ID);
             const userDoc = await t.get(userRef);
             if (!userDoc.exists()) throw new Error("Usuário não encontrado.");
 
@@ -1209,23 +1447,61 @@ window.tradeStock = async (action) => {
             const balance = Number(data.balance || 0);
             const stockCount = Number(data.stocks?.glasscoin || 0);
 
-            if(action === 'buy') {
-                if(balance < price) throw new Error("Saldo insuficiente");
+            let price = displayedPrice;
+            if (!stockFallbackMode) {
+                const cityDoc = await t.get(cityRef);
+                const stored = cityDoc.exists() ? normalizeStockState(cityDoc.data().stock) : null;
+                if (stored) price = stored.price;
+            }
+
+            if (action === 'buy') {
+                if (balance < price) throw new Error("Saldo insuficiente");
                 t.update(userRef, {
                     balance: Number((balance - price).toFixed(2)),
                     "stocks.glasscoin": increment(1)
                 });
+                const txRef = doc(collection(db, "transactions"));
+                t.set(txRef, buildTransactionRecord(txRef.id, {
+                    senderId: currentUser.uid,
+                    senderName: currentUser.name,
+                    senderShortId: currentUser.shortId || currentUser.uid,
+                    receiverId: 'MARKET',
+                    receiverName: 'Bolsa GlassCoin',
+                    receiverShortId: 'GLS',
+                    amount: price,
+                    tax: 0,
+                    total: price,
+                    type: 'stock_buy',
+                    method: 'Bolsa',
+                    participants: [currentUser.uid]
+                }));
             } else {
-                if(stockCount < 1) throw new Error("Você não tem ações");
+                if (stockCount < 1) throw new Error("Você não tem ações");
                 t.update(userRef, {
                     balance: Number((balance + price).toFixed(2)),
                     "stocks.glasscoin": increment(-1)
                 });
+                const txRef = doc(collection(db, "transactions"));
+                t.set(txRef, buildTransactionRecord(txRef.id, {
+                    senderId: 'MARKET',
+                    senderName: 'Bolsa GlassCoin',
+                    senderShortId: 'GLS',
+                    receiverId: currentUser.uid,
+                    receiverName: currentUser.name,
+                    receiverShortId: currentUser.shortId || currentUser.uid,
+                    amount: price,
+                    tax: 0,
+                    total: price,
+                    type: 'stock_sell',
+                    method: 'Bolsa',
+                    participants: [currentUser.uid]
+                }));
             }
         });
         playSound('click');
+        showToast(action === 'buy' ? `Comprou 1 GLS por ${formatMoney(displayedPrice)}.` : `Vendeu 1 GLS por ${formatMoney(displayedPrice)}.`);
     } catch (e) {
-        logSystemFailure('tradeStock', e, { userId: currentUser?.uid, action, price }).catch(() => {});
+        logSystemFailure('tradeStock', e, { userId: currentUser?.uid, action, price: displayedPrice }).catch(() => {});
         showToast(toErrorMessage(e), "error");
     }
 };
@@ -1371,7 +1647,8 @@ function useContact(shortId) {
     const input = document.getElementById('dest-id');
     if (!input) return;
     input.value = shortId;
-    navTo('transfer');
+    setPixTab('send');
+    navTo('pix');
     updateTransferPreview();
 }
 
@@ -1535,6 +1812,101 @@ function buildNotificationsFromTransactions() {
                 date: executedAt
             });
         }
+
+        if (transaction.type === 'bill') {
+            items.push({
+                id: `${transaction.id}:bill`,
+                transactionId: transaction.id,
+                type: 'enviado',
+                title: 'Conta paga',
+                description: `${transaction.method || 'Conta'} • ${senderIsCurrent ? 'Pagamento realizado' : 'Pagamento de conta'}`,
+                amount: Number(transaction.total || transaction.amount || 0),
+                date: executedAt
+            });
+            if (taxAmount > 0) {
+                items.push({
+                    id: `${transaction.id}:bill-tax`,
+                    transactionId: transaction.id,
+                    type: 'imposto',
+                    title: 'Imposto sobre conta',
+                    description: `Taxa municipal aplicada em ${transaction.method || 'conta'}`,
+                    amount: taxAmount,
+                    date: executedAt
+                });
+            }
+        }
+
+        if (transaction.type === 'cashout') {
+            items.push({
+                id: `${transaction.id}:cashout`,
+                transactionId: transaction.id,
+                type: 'enviado',
+                title: 'Saque no caixa',
+                description: 'Dinheiro retirado da conta',
+                amount: Number(transaction.total || transaction.amount || 0),
+                date: executedAt
+            });
+        }
+
+        if (transaction.type === 'cashin') {
+            items.push({
+                id: `${transaction.id}:cashin`,
+                transactionId: transaction.id,
+                type: 'recebido',
+                title: 'Deposito no caixa',
+                description: 'Dinheiro depositado na conta',
+                amount: Number(transaction.amount || 0),
+                date: executedAt
+            });
+        }
+
+        if (transaction.type === 'stock_buy') {
+            items.push({
+                id: `${transaction.id}:stock-buy`,
+                transactionId: transaction.id,
+                type: 'enviado',
+                title: 'Compra de GlassCoin',
+                description: '1 GLS adquirido na bolsa',
+                amount: Number(transaction.amount || 0),
+                date: executedAt
+            });
+        }
+
+        if (transaction.type === 'stock_sell') {
+            items.push({
+                id: `${transaction.id}:stock-sell`,
+                transactionId: transaction.id,
+                type: 'recebido',
+                title: 'Venda de GlassCoin',
+                description: '1 GLS vendido na bolsa',
+                amount: Number(transaction.amount || 0),
+                date: executedAt
+            });
+        }
+
+        if (transaction.type === 'savings_deposit') {
+            items.push({
+                id: `${transaction.id}:save-in`,
+                transactionId: transaction.id,
+                type: 'enviado',
+                title: 'Valor guardado no cofre',
+                description: 'Deposito na poupanca',
+                amount: Number(transaction.amount || 0),
+                date: executedAt
+            });
+        }
+
+        if (transaction.type === 'savings_withdraw') {
+            items.push({
+                id: `${transaction.id}:save-out`,
+                transactionId: transaction.id,
+                type: 'recebido',
+                title: 'Saque do cofre',
+                description: 'Retirada da poupanca',
+                amount: Number(transaction.amount || 0),
+                date: executedAt
+            });
+        }
     });
 
     return items
@@ -1569,6 +1941,12 @@ function renderNotifications() {
     const unreadCount = currentNotifications.filter((item) => !readIds.has(item.id)).length;
     badge.innerText = String(unreadCount);
     badge.classList.toggle('hidden', unreadCount === 0);
+
+    const sidebarBadge = document.getElementById('sidebar-notification-badge');
+    if (sidebarBadge) {
+        sidebarBadge.innerText = String(unreadCount);
+        sidebarBadge.classList.toggle('hidden', unreadCount === 0);
+    }
 
     list.innerHTML = '';
     if (!currentNotifications.length) {
@@ -1718,6 +2096,7 @@ function renderLoanPanel() {
     const state = getLoanState(currentUser);
     fillText('loan-limit-display', formatMoney(state.availableLimit));
     fillText('loan-debt-display', formatMoney(state.loanOutstanding));
+    renderCreditScore(state.score);
 
     if (state.accountAgeMinutes < LOAN_MIN_ACCOUNT_MINUTES) {
         fillText('loan-status-copy', `Conta nova. Aguarde ${Math.ceil(LOAN_MIN_ACCOUNT_MINUTES - state.accountAgeMinutes)} min para credito.`);
@@ -1726,7 +2105,7 @@ function renderLoanPanel() {
     } else if (state.cooldownRemainingMs > 0) {
         fillText('loan-status-copy', `Novo credito liberado em ${Math.ceil(state.cooldownRemainingMs / (60 * 60 * 1000))}h.`);
     } else {
-        fillText('loan-status-copy', `Limite calculado pelo saldo atual: ${formatMoney(state.dynamicLimit)}.`);
+        fillText('loan-status-copy', `Limite pelo score (${state.score.total}) e saldo: ${formatMoney(state.dynamicLimit)}.`);
     }
 
     fillText('loan-next-window', `Disponivel na janela de 24h: ${formatMoney(state.remainingWindowLimit)}.`);
@@ -2403,7 +2782,8 @@ async function startScanner() {
                 }
 
                 await stopScanner();
-                navTo('transfer');
+                setPixTab('send');
+                navTo('pix');
                 document.getElementById('dest-id').value = payload.shortId;
                 document.getElementById('amount').value = payload.amount.toFixed(2);
                 updateTransferPreview();
@@ -2704,8 +3084,10 @@ function listenToTransactions(uid) {
     unsubTransactions = onSnapshot(q, (snap) => {
         currentTransactions = [];
         snap.forEach(d => currentTransactions.push({ ...d.data(), id: d.id }));
+        transactionsLoaded = true;
         renderHistory(activeHistoryFilter);
         renderNotifications();
+        renderBalanceChart();
     });
 }
 
@@ -2725,7 +3107,7 @@ function renderHistory(filter) {
 
     currentTransactions.forEach(t => {
         const isSender = t.senderId === currentUser.uid;
-        const hasTax = Number(t.tax || 0) > 0 || t.type === 'tax';
+        const hasTax = Number(t.tax || 0) > 0;
         if (filter === 'in' && isSender) return;
         if (filter === 'out' && !isSender) return;
         if (filter === 'tax' && !hasTax) return;
@@ -2740,6 +3122,13 @@ function renderHistory(filter) {
         if (t.type === 'welfare') { icon = 'gift'; color = '#3498db'; signal = '+'; }
         if (t.type === 'loan') { icon = 'hand-holding-usd'; color = '#f39c12'; signal = '+'; }
         if (t.type === 'loan_payment') { icon = 'wallet'; color = '#ff9f43'; signal = '-'; }
+        if (t.type === 'bill') { icon = 'file-invoice-dollar'; color = '#ff9f43'; signal = '-'; }
+        if (t.type === 'cashout') { icon = 'money-bill-wave'; color = '#ff9f43'; signal = '-'; }
+        if (t.type === 'cashin') { icon = 'money-bill-wave'; color = '#3498db'; signal = '+'; }
+        if (t.type === 'stock_buy') { icon = 'chart-line'; color = '#f5c842'; signal = '-'; }
+        if (t.type === 'stock_sell') { icon = 'chart-line'; color = '#2ecc71'; signal = '+'; }
+        if (t.type === 'savings_deposit') { icon = 'piggy-bank'; color = '#4d90fe'; signal = '-'; }
+        if (t.type === 'savings_withdraw') { icon = 'piggy-bank'; color = '#4d90fe'; signal = '+'; }
 
         const title = t.type === 'transfer' ? (isSender ? t.receiverName : t.senderName) : (t.senderName || 'Sistema');
         const txType = String(t.type || 'transaction').toUpperCase();
@@ -2812,6 +3201,751 @@ function renderHistory(filter) {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════
+// TEMA CLARO/ESCURO
+// ═══════════════════════════════════════════════════════════════
+function applyTheme(theme) {
+    document.documentElement.dataset.theme = theme;
+    const icon = document.getElementById('theme-icon');
+    if (icon) icon.className = theme === 'light' ? 'fas fa-moon' : 'fas fa-sun';
+}
+
+function initTheme() {
+    let stored = null;
+    try { stored = window.localStorage.getItem(THEME_STORAGE_KEY); } catch (_) { stored = null; }
+    const prefersLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+    applyTheme(stored === 'light' || stored === 'dark' ? stored : (prefersLight ? 'light' : 'dark'));
+}
+
+function toggleTheme() {
+    const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+    applyTheme(next);
+    try { window.localStorage.setItem(THEME_STORAGE_KEY, next); } catch (_) {}
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SKELETONS
+// ═══════════════════════════════════════════════════════════════
+function removeSkeleton(id, text) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.classList.remove('skeleton');
+    if (text !== undefined) el.innerText = text;
+}
+
+function resetSkeletons() {
+    ['user-name', 'user-balance', 'user-short-id'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.classList.add('skeleton');
+    });
+    const nameEl = document.getElementById('user-name');
+    if (nameEl) nameEl.innerText = 'Carregando...';
+    const list = document.getElementById('transaction-list');
+    if (list) list.innerHTML = '<li class="skeleton-row" aria-hidden="true"></li>'.repeat(3);
+    const notifList = document.getElementById('notifications-list');
+    if (notifList) notifList.innerHTML = '<div class="skeleton-row" aria-hidden="true"></div>'.repeat(2);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SCORE DE CRÉDITO (derivado, 0–1000)
+// ═══════════════════════════════════════════════════════════════
+function computeCreditScore(userData = currentUser) {
+    const factors = [];
+    let total = 400; // base
+
+    const paidOnTime = Number(userData?.billsPaidOnTime || 0);
+    const paidLate = Number(userData?.billsPaidLate || 0);
+    const totalPaid = paidOnTime + paidLate;
+    let paymentPoints;
+    let paymentLabel;
+    if (totalPaid === 0) {
+        paymentPoints = 100;
+        paymentLabel = 'Sem histórico';
+    } else {
+        paymentPoints = Math.round(250 * (paidOnTime / totalPaid));
+        paymentLabel = `${paidOnTime}/${totalPaid} pontuais`;
+    }
+    factors.push({ label: 'Contas pagas', value: paymentLabel, points: paymentPoints });
+    total += paymentPoints;
+
+    const hasOpenLateBill = normalizeBills(userData?.bills).some((bill) => bill.status === 'open' && Date.now() > bill.dueMs);
+    if (hasOpenLateBill) {
+        factors.push({ label: 'Conta vencida', value: 'Em atraso', points: -80 });
+        total -= 80;
+    } else {
+        factors.push({ label: 'Conta vencida', value: 'Nenhuma', points: 40 });
+        total += 40;
+    }
+
+    const debt = Number(userData?.loanOutstanding || 0);
+    if (debt > 0) {
+        const penalty = Math.round(150 * Math.min(1, debt / LOAN_LIMIT));
+        factors.push({ label: 'Dívida ativa', value: formatMoney(debt), points: -penalty });
+        total -= penalty;
+    } else {
+        factors.push({ label: 'Dívida ativa', value: 'Nenhuma', points: 80 });
+        total += 80;
+    }
+
+    if (Number(userData?.savingsBalance || 0) > 0) {
+        factors.push({ label: 'Cofre', value: 'Ativo', points: 70 });
+        total += 70;
+    } else {
+        factors.push({ label: 'Cofre', value: 'Vazio', points: 0 });
+    }
+
+    if (Number(userData?.balance || 0) < 0) {
+        factors.push({ label: 'Saldo', value: 'Negativo', points: -120 });
+        total -= 120;
+    } else {
+        factors.push({ label: 'Saldo', value: 'Positivo', points: 50 });
+        total += 50;
+    }
+
+    const createdAtMs = timestampToMillis(userData?.createdAt, Date.now());
+    const ageDays = Math.max(0, (Date.now() - createdAtMs) / (24 * 60 * 60 * 1000));
+    const agePoints = Math.round(Math.min(110, ageDays * 5));
+    factors.push({ label: 'Idade da conta', value: ageDays < 1 ? 'Nova' : `${Math.floor(ageDays)}d`, points: agePoints });
+    total += agePoints;
+
+    total = Math.max(0, Math.min(1000, Math.round(total)));
+
+    let band = 'Ruim';
+    let color = 'var(--red)';
+    if (total >= 800) { band = 'Excelente'; color = 'var(--green)'; }
+    else if (total >= 500) { band = 'Bom'; color = 'var(--green)'; }
+    else if (total >= 300) { band = 'Regular'; color = 'var(--gold)'; }
+
+    return { total, band, color, factors };
+}
+
+function renderCreditScore(score) {
+    const valueEl = document.getElementById('score-value');
+    const bandEl = document.getElementById('score-band');
+    const arcEl = document.getElementById('score-gauge-arc');
+    const factorsEl = document.getElementById('score-factors');
+    if (!valueEl || !bandEl || !arcEl) return;
+
+    valueEl.innerText = String(score.total);
+    bandEl.innerText = score.band;
+    bandEl.style.color = score.color;
+    arcEl.style.stroke = score.color;
+    arcEl.style.strokeDashoffset = String(GAUGE_CIRCUMFERENCE * (1 - score.total / 1000));
+
+    if (factorsEl) {
+        factorsEl.innerHTML = '';
+        score.factors.forEach((factor) => {
+            const row = document.createElement('div');
+            row.className = 'score-factor';
+
+            const label = document.createElement('span');
+            label.innerText = `${factor.label}: ${factor.value}`;
+
+            const points = document.createElement('strong');
+            const sign = factor.points > 0 ? '+' : '';
+            points.innerText = `${sign}${factor.points}`;
+            points.className = factor.points > 0 ? 'pos' : factor.points < 0 ? 'neg' : 'neu';
+
+            row.appendChild(label);
+            row.appendChild(points);
+            factorsEl.appendChild(row);
+        });
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CONTAS (ÁGUA / LUZ / INTERNET)
+// ═══════════════════════════════════════════════════════════════
+function normalizeBills(raw) {
+    if (!Array.isArray(raw)) return [];
+    return raw
+        .map((bill, index) => ({
+            id: String(bill?.id || `bill-${index}`),
+            type: BILL_TYPES[bill?.type] ? bill.type : 'water',
+            amount: Number(bill?.amount || 0),
+            dueMs: Number(bill?.dueMs || 0),
+            status: bill?.status === 'paid' ? 'paid' : 'open',
+            createdAtMs: Number(bill?.createdAtMs || 0),
+            paidAtMs: Number(bill?.paidAtMs || 0),
+            txId: bill?.txId ? String(bill.txId) : ''
+        }))
+        .filter((bill) => bill.amount > 0 && bill.createdAtMs > 0);
+}
+
+async function ensureBills(uid, userData) {
+    const bills = normalizeBills(userData.bills);
+    const now = Date.now();
+    const nextBills = [...bills];
+    let changed = false;
+
+    Object.entries(BILL_TYPES).forEach(([type, config]) => {
+        if (nextBills.some((bill) => bill.type === type && bill.status === 'open')) return;
+        const lastOfType = nextBills
+            .filter((bill) => bill.type === type)
+            .sort((a, b) => b.createdAtMs - a.createdAtMs)[0];
+        if (lastOfType && (now - lastOfType.createdAtMs) < BILL_CYCLE_MS) return;
+
+        const amount = Number((config.min + (config.max - config.min) * Math.random()).toFixed(2));
+        nextBills.unshift({
+            id: `BILL${randomHex(4).toUpperCase()}`,
+            type,
+            amount,
+            dueMs: now + BILL_DUE_MS,
+            status: 'open',
+            createdAtMs: now,
+            paidAtMs: 0,
+            txId: ''
+        });
+        changed = true;
+    });
+
+    if (!changed) return;
+
+    const open = nextBills.filter((bill) => bill.status === 'open');
+    const paid = nextBills
+        .filter((bill) => bill.status === 'paid')
+        .sort((a, b) => b.paidAtMs - a.paidAtMs)
+        .slice(0, Math.max(0, MAX_BILLS_STORED - open.length));
+
+    await updateDoc(doc(db, "users", uid), { bills: [...open, ...paid] });
+}
+
+function billPenalty(bill, now = Date.now()) {
+    const lateMs = Math.max(0, now - bill.dueMs);
+    const lateDays = Math.floor(lateMs / (24 * 60 * 60 * 1000));
+    const rate = Math.min(BILL_LATE_MAX_RATE, lateDays * BILL_LATE_DAILY_RATE);
+    return { lateDays, rate, amount: Number((bill.amount * rate).toFixed(2)) };
+}
+
+function formatHoursRemaining(ms) {
+    if (ms <= 0) return 'agora';
+    const hours = Math.ceil(ms / (60 * 60 * 1000));
+    if (hours < 48) return `${hours}h`;
+    return `${Math.ceil(hours / 24)}d`;
+}
+
+function renderBills() {
+    if (!currentUser) return;
+    const openList = document.getElementById('open-bills-list');
+    const paidList = document.getElementById('paid-bills-list');
+    if (!openList || !paidList) return;
+
+    const bills = normalizeBills(currentUser.bills);
+    const now = Date.now();
+    const open = bills.filter((bill) => bill.status === 'open').sort((a, b) => a.dueMs - b.dueMs);
+    const paid = bills.filter((bill) => bill.status === 'paid').sort((a, b) => b.paidAtMs - a.paidAtMs);
+
+    openList.innerHTML = '';
+    if (!open.length) {
+        renderEmptyState(openList, 'Nenhuma conta aberta no momento. Novas contas chegam a cada 3 dias.');
+    }
+
+    open.forEach((bill) => {
+        const config = BILL_TYPES[bill.type];
+        const penalty = billPenalty(bill, now);
+        const isLate = now > bill.dueMs;
+
+        const card = document.createElement('div');
+        card.className = `bill-card${isLate ? ' late' : ''}`;
+
+        const icon = document.createElement('div');
+        icon.className = `bill-icon bill-${bill.type}`;
+        icon.innerHTML = `<i class="fas fa-${config.icon}" aria-hidden="true"></i>`;
+
+        const copy = document.createElement('div');
+        copy.className = 'bill-copy';
+
+        const title = document.createElement('strong');
+        title.innerText = `Conta de ${config.label}`;
+
+        const amountEl = document.createElement('span');
+        amountEl.className = 'bill-amount';
+        amountEl.innerText = formatMoney(bill.amount);
+
+        const meta = document.createElement('small');
+        if (isLate) {
+            meta.className = 'alert';
+            meta.innerText = `Venceu há ${formatHoursRemaining(now - bill.dueMs)} • multa atual ${formatMoney(penalty.amount)}`;
+        } else {
+            meta.innerText = `Vence em ${formatHoursRemaining(bill.dueMs - now)}`;
+        }
+
+        copy.appendChild(title);
+        copy.appendChild(amountEl);
+        copy.appendChild(meta);
+
+        const payBtn = document.createElement('button');
+        payBtn.className = 'small-btn';
+        const tax = Number((bill.amount * currentTaxRate).toFixed(2));
+        payBtn.innerText = `Pagar ${formatMoney(bill.amount + penalty.amount + tax)}`;
+        payBtn.addEventListener('click', () => window.payBill(bill.id));
+
+        card.appendChild(icon);
+        card.appendChild(copy);
+        card.appendChild(payBtn);
+        openList.appendChild(card);
+    });
+
+    paidList.innerHTML = '';
+    if (!paid.length) {
+        renderEmptyState(paidList, 'Nenhum pagamento recente.');
+    }
+    paid.forEach((bill) => {
+        const config = BILL_TYPES[bill.type];
+        const item = document.createElement('div');
+        item.className = 'bill-paid-listing';
+
+        const left = document.createElement('div');
+        left.innerHTML = `<i class="fas fa-${config.icon} bill-${bill.type}" aria-hidden="true" style="margin-right:6px;"></i>`;
+        const label = document.createElement('span');
+        label.innerText = `Conta de ${config.label}`;
+        left.appendChild(label);
+
+        const right = document.createElement('div');
+        right.style.textAlign = 'right';
+        const amount = document.createElement('strong');
+        amount.innerText = formatMoney(bill.amount);
+        const date = document.createElement('small');
+        date.innerText = bill.paidAtMs ? formatDateTime(new Date(bill.paidAtMs)) : '';
+        right.appendChild(amount);
+        right.appendChild(date);
+
+        item.appendChild(left);
+        item.appendChild(right);
+        paidList.appendChild(item);
+    });
+}
+
+window.payBill = async (billId) => {
+    if (!currentUser) return;
+    const bill = normalizeBills(currentUser.bills).find((item) => item.id === billId);
+    if (!bill || bill.status !== 'open') {
+        showToast('Conta não encontrada ou já paga.', 'error');
+        return;
+    }
+
+    const config = BILL_TYPES[bill.type];
+    try {
+        let receipt = null;
+        await runTransaction(db, async (t) => {
+            const userRef = doc(db, "users", currentUser.uid);
+            const cityRef = doc(db, "users", CITY_HALL_ID);
+            const userDoc = await t.get(userRef);
+            if (!userDoc.exists()) throw new Error("Usuário não encontrado.");
+
+            const userData = userDoc.data();
+            const bills = normalizeBills(userData.bills);
+            const target = bills.find((item) => item.id === billId);
+            if (!target || target.status !== 'open') throw new Error("Conta já paga ou removida.");
+
+            const cityDoc = await t.get(cityRef);
+            const taxRate = cityDoc.exists() ? Number(cityDoc.data().customTax || 0.02) : 0.02;
+
+            const now = Date.now();
+            const penalty = billPenalty(target, now);
+            const charged = Number((target.amount + penalty.amount).toFixed(2));
+            const tax = Number((target.amount * taxRate).toFixed(2));
+            const total = Number((charged + tax).toFixed(2));
+            const balance = Number(userData.balance || 0);
+            if (balance < total) throw new Error(`Saldo insuficiente. Total com imposto${penalty.amount > 0 ? ' e multa' : ''}: ${formatMoney(total)}.`);
+
+            const nextBills = bills.map((item) => item.id === billId
+                ? { ...item, status: 'paid', paidAtMs: now }
+                : item);
+
+            const isLate = now > target.dueMs;
+            t.update(userRef, {
+                balance: Number((balance - total).toFixed(2)),
+                bills: nextBills,
+                billsPaidOnTime: increment(isLate ? 0 : 1),
+                billsPaidLate: increment(isLate ? 1 : 0)
+            });
+
+            if (cityDoc.exists()) {
+                t.update(cityRef, {
+                    balance: increment(tax),
+                    totalTaxCollected: increment(tax)
+                });
+            }
+
+            const txRef = doc(collection(db, "transactions"));
+            const txId = formatTransactionId(txRef.id);
+            t.set(txRef, buildTransactionRecord(txRef.id, {
+                senderId: currentUser.uid,
+                senderName: currentUser.name,
+                senderShortId: currentUser.shortId || currentUser.uid,
+                receiverId: CITY_HALL_ID,
+                receiverName: 'Prefeitura (Contas)',
+                receiverShortId: 'CITY',
+                amount: charged,
+                tax,
+                total,
+                type: 'bill',
+                method: `Conta de ${config.label}`,
+                participants: [currentUser.uid]
+            }));
+            receipt = {
+                txId,
+                executedAt: new Date(),
+                amount: charged,
+                tax,
+                total,
+                late: isLate,
+                penalty: penalty.amount
+            };
+        });
+
+        showToast(`Conta de ${config.label} paga!`);
+        await showTransferReceipt({
+            title: 'GLASS BANK',
+            subtitle: 'Comprovante de Pagamento',
+            status: 'concluida',
+            txId: receipt.txId,
+            executedAt: receipt.executedAt,
+            method: `Conta de ${config.label}`,
+            senderName: currentUser.name,
+            senderId: currentUser.shortId || currentUser.uid,
+            receiverName: 'Prefeitura (Contas)',
+            receiverId: 'CITY',
+            amount: receipt.amount,
+            tax: receipt.tax,
+            total: receipt.total
+        });
+    } catch (e) {
+        logSystemFailure('payBill', e, { userId: currentUser?.uid, billId }).catch(() => {});
+        showToast(toErrorMessage(e), 'error');
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════
+// CAIXA ELETRÔNICO (SAQUE / DEPÓSITO)
+// ═══════════════════════════════════════════════════════════════
+function localDateKey(date = new Date()) {
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function getCashoutUsedToday(dailyCashout) {
+    if (!dailyCashout || typeof dailyCashout !== 'object' || dailyCashout.dateKey !== localDateKey()) return 0;
+    return Number(dailyCashout.total || 0);
+}
+
+function calcCashoutFee(amount) {
+    return Number(Math.min(CASHOUT_FEE_MAX, Math.max(CASHOUT_FEE_MIN, amount * CASHOUT_FEE_RATE)).toFixed(2));
+}
+
+window.openCashModal = () => {
+    if (!currentUser) return;
+    const modal = document.getElementById('cash-modal');
+    const amountInput = document.getElementById('cash-amount');
+    if (!modal || !amountInput) return;
+
+    fillText('cash-modal-balance', formatMoney(currentUser.balance || 0));
+    fillText('cash-modal-cash', formatMoney(currentUser.cashBalance || 0));
+    const usedToday = getCashoutUsedToday(currentUser.dailyCashout);
+    fillText('cash-modal-limit', formatMoney(Math.max(0, CASHOUT_DAILY_LIMIT - usedToday)));
+
+    amountInput.value = '';
+    modal.classList.remove('hidden');
+    setTimeout(() => amountInput.focus(), 50);
+};
+
+async function runCashAction(type) {
+    if (!currentUser) return;
+    const amountInput = document.getElementById('cash-amount');
+    const amount = toNumber(amountInput?.value);
+    if (!Number.isFinite(amount) || amount <= 0) {
+        showToast('Informe um valor válido.', 'error');
+        return;
+    }
+
+    try {
+        let receipt = null;
+        await runTransaction(db, async (t) => {
+            const userRef = doc(db, "users", currentUser.uid);
+            const cityRef = doc(db, "users", CITY_HALL_ID);
+            const userDoc = await t.get(userRef);
+            if (!userDoc.exists()) throw new Error("Usuário não encontrado.");
+
+            const data = userDoc.data();
+            const balance = Number(data.balance || 0);
+            const cashBalance = Number(data.cashBalance || 0);
+            const cityDoc = await t.get(cityRef);
+
+            if (type === 'withdraw') {
+                const usedToday = getCashoutUsedToday(data.dailyCashout);
+                const fee = calcCashoutFee(amount);
+                const total = Number((amount + fee).toFixed(2));
+                if (balance < total) throw new Error(`Saldo insuficiente. Total com tarifa: ${formatMoney(total)}.`);
+                if (usedToday + amount > CASHOUT_DAILY_LIMIT) {
+                    throw new Error(`Limite diário de saque: ${formatMoney(CASHOUT_DAILY_LIMIT)}. Restam ${formatMoney(Math.max(0, CASHOUT_DAILY_LIMIT - usedToday))}.`);
+                }
+
+                t.update(userRef, {
+                    balance: Number((balance - total).toFixed(2)),
+                    cashBalance: Number((cashBalance + amount).toFixed(2)),
+                    dailyCashout: { dateKey: localDateKey(), total: Number((usedToday + amount).toFixed(2)) }
+                });
+
+                if (cityDoc.exists()) t.update(cityRef, { balance: increment(fee) });
+
+                const txRef = doc(collection(db, "transactions"));
+                const txId = formatTransactionId(txRef.id);
+                t.set(txRef, buildTransactionRecord(txRef.id, {
+                    senderId: currentUser.uid,
+                    senderName: currentUser.name,
+                    senderShortId: currentUser.shortId || currentUser.uid,
+                    receiverId: 'SYSTEM',
+                    receiverName: 'Caixa Eletrônico',
+                    receiverShortId: 'ATM',
+                    amount,
+                    tax: fee,
+                    total,
+                    type: 'cashout',
+                    method: 'Caixa Eletrônico',
+                    participants: [currentUser.uid]
+                }));
+                receipt = { txId, executedAt: new Date(), amount, fee, total };
+            } else {
+                if (cashBalance < amount) throw new Error(`Carteira tem apenas ${formatMoney(cashBalance)} em dinheiro.`);
+                t.update(userRef, {
+                    balance: Number((balance + amount).toFixed(2)),
+                    cashBalance: Number((cashBalance - amount).toFixed(2))
+                });
+
+                const txRef = doc(collection(db, "transactions"));
+                const txId = formatTransactionId(txRef.id);
+                t.set(txRef, buildTransactionRecord(txRef.id, {
+                    senderId: 'SYSTEM',
+                    senderName: 'Caixa Eletrônico',
+                    senderShortId: 'ATM',
+                    receiverId: currentUser.uid,
+                    receiverName: currentUser.name,
+                    receiverShortId: currentUser.shortId || currentUser.uid,
+                    amount,
+                    tax: 0,
+                    total: amount,
+                    type: 'cashin',
+                    method: 'Caixa Eletrônico',
+                    participants: [currentUser.uid]
+                }));
+                receipt = { txId, executedAt: new Date(), amount, fee: 0, total: amount };
+            }
+        });
+
+        closeModal('cash-modal');
+        if (type === 'withdraw') {
+            showToast(`Saque de ${formatMoney(receipt.amount)} realizado. Tarifa: ${formatMoney(receipt.fee)}.`);
+        } else {
+            showToast(`Depósito de ${formatMoney(receipt.amount)} realizado.`);
+        }
+        await showTransferReceipt({
+            title: 'GLASS BANK',
+            subtitle: type === 'withdraw' ? 'Comprovante de Saque' : 'Comprovante de Depósito',
+            status: 'concluida',
+            txId: receipt.txId,
+            executedAt: receipt.executedAt,
+            method: 'Caixa Eletrônico',
+            senderName: type === 'withdraw' ? currentUser.name : 'Caixa Eletrônico',
+            senderId: type === 'withdraw' ? (currentUser.shortId || currentUser.uid) : 'ATM',
+            receiverName: type === 'withdraw' ? 'Carteira em dinheiro' : currentUser.name,
+            receiverId: type === 'withdraw' ? 'ATM' : (currentUser.shortId || currentUser.uid),
+            amount: receipt.amount,
+            tax: receipt.fee,
+            total: receipt.total
+        });
+    } catch (e) {
+        logSystemFailure('runCashAction', e, { userId: currentUser?.uid, type, amount }).catch(() => {});
+        showToast(toErrorMessage(e), 'error');
+    }
+}
+window.runCashAction = runCashAction;
+
+// ═══════════════════════════════════════════════════════════════
+// GRÁFICOS SVG (saldo e bolsa)
+// ═══════════════════════════════════════════════════════════════
+function transactionDeltaForUser(transaction, uid) {
+    const amount = Number(transaction.amount || 0);
+    const tax = Number(transaction.tax || 0);
+    const total = Number(transaction.total ?? (amount + tax));
+    if (transaction.type === 'interest_loan') return 0;
+    if (transaction.type === 'interest_overdraft') return -amount;
+    if (transaction.senderId === uid) return -total;
+    if (transaction.receiverId === uid) return amount;
+    return 0;
+}
+
+function buildBalancePoints() {
+    if (!currentUser) return [];
+    const ascending = [...currentTransactions]
+        .map((transaction) => ({
+            t: timestampToMillis(transaction.timestamp, 0),
+            delta: transactionDeltaForUser(transaction, currentUser.uid)
+        }))
+        .filter((point) => point.t > 0)
+        .sort((a, b) => a.t - b.t);
+
+    if (!ascending.length) return [];
+
+    const points = [];
+    let acc = Number(currentUser.balance || 0);
+    for (let i = ascending.length - 1; i >= 0; i -= 1) {
+        points.push({ t: ascending[i].t, v: acc });
+        acc = Number((acc - ascending[i].delta).toFixed(2));
+    }
+    points.push({ t: ascending[0].t - 1, v: acc });
+    return points.reverse();
+}
+
+function renderSparkline(container, points, goldMode = false) {
+    if (!container) return;
+    container.classList.toggle('gold', Boolean(goldMode));
+
+    if (!points || points.length < 2) {
+        container.innerHTML = '';
+        const empty = document.createElement('small');
+        empty.className = 'section-copy';
+        empty.style.alignSelf = 'center';
+        empty.innerText = 'Sem dados suficientes ainda.';
+        container.appendChild(empty);
+        return;
+    }
+
+    const W = 100;
+    const H = 40;
+    const values = points.map((point) => point.v);
+    let min = Math.min(...values);
+    let max = Math.max(...values);
+    if (max - min < 0.01) { min -= 1; max += 1; }
+
+    const t0 = points[0].t;
+    const span = Math.max(1, points[points.length - 1].t - t0);
+    const coords = points.map((point) => [
+        ((point.t - t0) / span) * W,
+        H - ((point.v - min) / (max - min)) * (H - 4) - 2
+    ]);
+    const line = coords.map(([x, y], index) => `${index ? 'L' : 'M'}${x.toFixed(2)},${y.toFixed(2)}`).join(' ');
+    const area = `${line} L${W},${H} L0,${H} Z`;
+
+    container.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true"><path d="${area}" fill="currentColor" fill-opacity="0.10" stroke="none"></path><path d="${line}" fill="none" stroke="currentColor" stroke-width="1.5" vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round"></path></svg>`;
+}
+
+function renderBalanceChart() {
+    const container = document.getElementById('balance-spark');
+    if (!container || !currentUser) return;
+
+    let points = buildBalancePoints();
+    if (activeSparkRange > 0) {
+        const cutoff = Date.now() - activeSparkRange * 24 * 60 * 60 * 1000;
+        const filtered = points.filter((point) => point.t >= cutoff);
+        if (filtered.length >= 2) points = filtered;
+    }
+    renderSparkline(container, points);
+}
+
+window.setSparkRange = (days, event) => {
+    activeSparkRange = Number(days) === 7 ? 7 : Number(days) === 30 ? 30 : 0;
+    document.querySelectorAll('.spark-range button').forEach((btn) => btn.classList.remove('active-chip'));
+    const targetBtn = event?.currentTarget || document.querySelector(`.spark-range button[data-range="${days}"]`);
+    if (targetBtn) targetBtn.classList.add('active-chip');
+    renderBalanceChart();
+};
+
+// ═══════════════════════════════════════════════════════════════
+// EXTRATO EXPORTÁVEL (CSV + IMPRESSÃO)
+// ═══════════════════════════════════════════════════════════════
+function describeTransaction(transaction) {
+    const type = String(transaction.type || '');
+    const isSender = transaction.senderId === currentUser?.uid;
+    switch (type) {
+        case 'transfer':
+            return isSender ? `Pix para ${transaction.receiverName || transaction.receiverShortId}` : `Pix de ${transaction.senderName || transaction.senderShortId}`;
+        case 'interest_yield': return 'Rendimento do cofre';
+        case 'interest_loan': return 'Juros do empréstimo';
+        case 'interest_overdraft': return 'Juros de saldo negativo';
+        case 'loan': return 'Crédito aprovado';
+        case 'loan_payment': return 'Amortização de dívida';
+        case 'welfare': return 'Auxílio cidadão';
+        case 'poll_fund': return 'Investimento público';
+        case 'bill': return transaction.method || 'Pagamento de conta';
+        case 'cashout': return 'Saque no caixa eletrônico';
+        case 'cashin': return 'Depósito no caixa eletrônico';
+        case 'stock_buy': return 'Compra de GlassCoin';
+        case 'stock_sell': return 'Venda de GlassCoin';
+        case 'savings_deposit': return 'Guardado no cofre';
+        case 'savings_withdraw': return 'Saque do cofre';
+        default: return transaction.method || type || 'Transação';
+    }
+}
+
+function csvEscape(value) {
+    const text = String(value ?? '');
+    return `"${text.replace(/"/g, '""')}"`;
+}
+
+window.exportStatementCsv = () => {
+    if (!currentUser) return;
+    if (!currentTransactions.length) {
+        showToast('Nenhuma transação para exportar.', 'error');
+        return;
+    }
+
+    const header = ['Data', 'Tipo', 'Descrição', 'Valor', 'Imposto', 'Total', 'Status', 'ID'];
+    const rows = currentTransactions.map((transaction) => [
+        formatDateTime(timestampToDate(transaction.timestamp, new Date(0))),
+        String(transaction.type || ''),
+        describeTransaction(transaction),
+        (Number(transaction.amount || 0)).toFixed(2).replace('.', ','),
+        (Number(transaction.tax || 0)).toFixed(2).replace('.', ','),
+        (Number(transaction.total ?? (Number(transaction.amount || 0) + Number(transaction.tax || 0)))).toFixed(2).replace('.', ','),
+        formatStatus(transaction.status || 'concluida'),
+        transaction.txId || formatTransactionId(transaction.id)
+    ]);
+
+    const csv = [header, ...rows].map((row) => row.map(csvEscape).join(';')).join('\r\n');
+    const blob = new Blob([`\ufeff${csv}`], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    const now = new Date();
+    link.href = url;
+    link.download = `glassbank-extrato-${localDateKey(now)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    showToast('Extrato CSV baixado.');
+};
+
+window.printStatement = () => {
+    if (!currentUser) return;
+    if (!currentTransactions.length) {
+        showToast('Nenhuma transação para imprimir.', 'error');
+        return;
+    }
+
+    const rowsHtml = currentTransactions.map((transaction) => {
+        const total = Number(transaction.total ?? (Number(transaction.amount || 0) + Number(transaction.tax || 0)));
+        return `<tr>
+            <td>${formatDateTime(timestampToDate(transaction.timestamp, new Date(0)))}</td>
+            <td>${describeTransaction(transaction)}</td>
+            <td class="num">${(Number(transaction.amount || 0)).toFixed(2).replace('.', ',')}</td>
+            <td class="num">${(Number(transaction.tax || 0)).toFixed(2).replace('.', ',')}</td>
+            <td class="num">${total.toFixed(2).replace('.', ',')}</td>
+        </tr>`;
+    }).join('');
+
+    const view = document.getElementById('print-statement');
+    if (view) {
+        view.innerHTML = `
+            <h2>GlassBank — Extrato</h2>
+            <p class="ps-meta">${currentUser.name || 'Conta'} • ID ${currentUser.shortId || '-'} • Emitido em ${formatDateTime(new Date())} • ${currentTransactions.length} transações mais recentes</p>
+            <table>
+                <thead><tr><th>Data</th><th>Descrição</th><th>Valor (R$)</th><th>Imposto (R$)</th><th>Total (R$)</th></tr></thead>
+                <tbody>${rowsHtml}</tbody>
+            </table>`;
+    }
+    window.print();
+};
+
 function initStaticListeners() {
     const logoutBtn = document.getElementById('logout-btn');
     if (logoutBtn && !logoutBtn.dataset.bound) {
@@ -2872,8 +4006,89 @@ function initStaticListeners() {
             welfareTargetInput.value = welfareTargetInput.value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 6);
         });
     }
+
+    document.querySelectorAll('[data-nav]').forEach((navBtn) => {
+        if (navBtn.dataset.bound) return;
+        navBtn.dataset.bound = '1';
+        navBtn.addEventListener('click', () => navTo(navBtn.dataset.nav));
+    });
+
+    const themeBtn = document.getElementById('theme-toggle-btn');
+    if (themeBtn && !themeBtn.dataset.bound) {
+        themeBtn.dataset.bound = '1';
+        themeBtn.addEventListener('click', toggleTheme);
+    }
+
+    const savingsConfirmBtn = document.getElementById('savings-modal-confirm');
+    if (savingsConfirmBtn && !savingsConfirmBtn.dataset.bound) {
+        savingsConfirmBtn.dataset.bound = '1';
+        savingsConfirmBtn.addEventListener('click', () => window.confirmSavingsAction());
+    }
+
+    const savingsAmountInput = document.getElementById('savings-modal-amount');
+    if (savingsAmountInput && !savingsAmountInput.dataset.bound) {
+        savingsAmountInput.dataset.bound = '1';
+        savingsAmountInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                window.confirmSavingsAction();
+            }
+        });
+    }
+
+    const cashWithdrawBtn = document.getElementById('cash-withdraw-btn');
+    if (cashWithdrawBtn && !cashWithdrawBtn.dataset.bound) {
+        cashWithdrawBtn.dataset.bound = '1';
+        cashWithdrawBtn.addEventListener('click', () => runCashAction('withdraw'));
+    }
+
+    const cashDepositBtn = document.getElementById('cash-deposit-btn');
+    if (cashDepositBtn && !cashDepositBtn.dataset.bound) {
+        cashDepositBtn.dataset.bound = '1';
+        cashDepositBtn.addEventListener('click', () => runCashAction('deposit'));
+    }
+
+    const cashAmountInput = document.getElementById('cash-amount');
+    if (cashAmountInput && !cashAmountInput.dataset.bound) {
+        cashAmountInput.dataset.bound = '1';
+        cashAmountInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                runCashAction('withdraw');
+            }
+        });
+    }
+
+    const sparkRangeWrap = document.querySelector('.spark-range');
+    if (sparkRangeWrap && !sparkRangeWrap.dataset.bound) {
+        sparkRangeWrap.dataset.bound = '1';
+        sparkRangeWrap.querySelectorAll('button').forEach((btn) => {
+            btn.addEventListener('click', (event) => window.setSparkRange(btn.dataset.range, event));
+        });
+    }
+
+    const exportCsvBtn = document.getElementById('export-csv-btn');
+    if (exportCsvBtn && !exportCsvBtn.dataset.bound) {
+        exportCsvBtn.dataset.bound = '1';
+        exportCsvBtn.addEventListener('click', () => window.exportStatementCsv());
+    }
+
+    const printBtn = document.getElementById('print-statement-btn');
+    if (printBtn && !printBtn.dataset.bound) {
+        printBtn.dataset.bound = '1';
+        printBtn.addEventListener('click', () => window.printStatement());
+    }
+
+    if (!document.body.dataset.escBound) {
+        document.body.dataset.escBound = '1';
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') closeTopModal();
+        });
+    }
 }
 
 initStaticListeners();
+initTheme();
 toggleAuth('login');
 updateTransferPreview();
+setPixTab('send');
