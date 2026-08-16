@@ -4,6 +4,8 @@ Um **simulador bancário educacional** com uma economia totalmente simulada.
 
 O GlassBank funciona como uma aplicação web client-side usando **Firebase Authentication + Firestore**, sem necessidade de build ou backend próprio.
 
+🌐 **[Acessar o GlassBank](https://joaosbguilherme-ui.github.io/GlassBank/)**
+
 ## ✨ Principais recursos
 
 - 🔐 **Conta e autenticação** — cadastro, login e PIN de segurança.
@@ -13,10 +15,10 @@ O GlassBank funciona como uma aplicação web client-side usando **Firebase Auth
 - 💵 **Caixa eletrônico** — saque e depósito de dinheiro.
 - 🧾 **Contas** — água, luz e internet, com vencimento, impostos e multas.
 - 📊 **Score de crédito** — de 0 a 1000, influenciado pelo comportamento financeiro.
-- 📈 &#x2A;*Bolsa GlassCoin (GLS)** — compra, venda e histórico de preços.
+- 📈 **Bolsa GlassCoin (GLS)** — compra, venda e histórico de preços.
 - 📜 **Extrato** — histórico de transações com exportação para CSV e impressão em PDF.
 - 🏛️ **Prefeitura** — impostos, recompensas, investimentos e ferramentas administrativas.
-- 🌙 **Tema claro/escuro** — com suporte a preferência do sistema.
+- 🌙 **Tema claro/escuro** — com suporte à preferência do sistema.
 - 📱 **Interface responsiva** — funciona em computadores e dispositivos móveis.
 
 ## 🛠️ Tecnologias
@@ -28,7 +30,7 @@ O GlassBank funciona como uma aplicação web client-side usando **Firebase Auth
 - **Google Fonts** — Syne + Figtree
 - **html5-qrcode 2.3.8** — geração e leitura de QR Codes
 
-O projeto utiliza hospedagem estática, como **Firebase Hosting**, e não precisa de processo de build.&#x20;
+O projeto utiliza hospedagem estática e não precisa de processo de build.
 
 ## 🚀 Como executar
 
@@ -70,7 +72,7 @@ style.css    → Estilos, temas, responsividade e animações
 script.js    → Lógica principal do GlassBank
 ```
 
-A aplicação é executada principalmente no cliente, utilizando transações do Firestore para sincronizar operações da economia simulada. fileciteturn0file0L39-L44
+A aplicação é executada principalmente no cliente, utilizando transações do Firestore para sincronizar operações da economia simulada.
 
 ## 📱 Compatibilidade
 
@@ -81,7 +83,7 @@ Funciona em:
 - Edge
 - Safari
 
-Também possui interface adaptada para **desktop e mobile**. O leitor de QR Code requer acesso à câmera (`getUserMedia`). fileciteturn0file0L128-L133
+Também possui interface adaptada para **desktop e mobile**. O leitor de QR Code requer acesso à câmera (`getUserMedia`).
 
 ## ⚠️ Limitações
 
@@ -89,7 +91,7 @@ Também possui interface adaptada para **desktop e mobile**. O leitor de QR Code
 - O scanner QR precisa de uma câmera.
 - A atualização da bolsa depende das permissões de escrita no Firestore.
 - Recursos administrativos são restritos a contas autorizadas.
-- O projeto ainda **não é um PWA** e não possui funcionamento offline. fileciteturn0file0L180-L185
+- O projeto ainda **não é um PWA** e não possui funcionamento offline.
 
 ## 📚 Objetivo
 
@@ -104,6 +106,14 @@ O GlassBank foi desenvolvido como um **projeto educacional**, permitindo experim
 - Desenvolvimento web
 - Firebase
 
+## 🤝 Open Source
+
+O GlassBank é um projeto **open-source**.
+
+Sinta-se à vontade para explorar o código, estudar seu funcionamento, propor melhorias e contribuir com o projeto.
+
 ## 📄 Licença
 
-**Projeto privado — uso educacional.**
+Este projeto é **open-source** e está disponível para fins educacionais e de desenvolvimento.
+
+Consulte o arquivo de licença do repositório para conhecer os termos completos de uso e distribuição.
