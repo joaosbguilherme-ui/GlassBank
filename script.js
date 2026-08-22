@@ -1,6 +1,6 @@
 ﻿import { initializeApp } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-app.js";
-import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, onAuthStateChanged, signOut, EmailAuthProvider, reauthenticateWithCredential, updatePassword, sendPasswordResetEmail } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-auth.js";
-import { getFirestore, doc, setDoc, updateDoc, collection, query, where, onSnapshot, runTransaction, serverTimestamp, orderBy, limit, getDocs, increment, addDoc, deleteField } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-firestore.js";
+import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, onAuthStateChanged, signOut, EmailAuthProvider, reauthenticateWithCredential, updatePassword, sendPasswordResetEmail, deleteUser } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-auth.js";
+import { getFirestore, doc, setDoc, updateDoc, collection, query, where, onSnapshot, runTransaction, serverTimestamp, orderBy, limit, getDocs, increment, addDoc, deleteField, deleteDoc } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-firestore.js";
 
 // CONFIGURAÇÃO FIREBASE (MANTENHA A SUA)
 const firebaseConfig = {
@@ -94,6 +94,29 @@ const toErrorMessage = (error) => {
     if (error && typeof error.message === 'string') return error.message;
     return 'Ocorreu um erro inesperado.';
 };
+
+// Mensagens amigáveis para erros comuns do Firebase Authentication.
+// O "400" no console (accounts:signUp) é apenas o log de rede da tentativa
+// negada; o motivo real chega aqui via error.code.
+const AUTH_ERROR_MESSAGES = {
+    'auth/email-already-in-use': 'Este e-mail já está cadastrado. Faça login ou use outro e-mail.',
+    'auth/invalid-email': 'E-mail inválido. Verifique e tente novamente.',
+    'auth/missing-password': 'Informe sua senha.',
+    'auth/weak-password': 'Senha muito fraca. Use ao menos 6 caracteres.',
+    'auth/operation-not-allowed': 'Cadastro por e-mail/senha está desativado. Habilite em Firebase Console → Authentication → Sign-in method.',
+    'auth/too-many-requests': 'Muitas tentativas. Aguarde alguns minutos e tente novamente.',
+    'auth/network-request-failed': 'Falha de rede. Verifique sua conexão e tente novamente.',
+    'auth/invalid-credential': 'E-mail ou senha incorretos.',
+    'auth/wrong-password': 'E-mail ou senha incorretos.',
+    'auth/user-not-found': 'E-mail ou senha incorretos.',
+    'auth/unauthorized-domain': 'Este domínio não está autorizado no Firebase Authentication.',
+    'auth/admin-restricted-operation': 'Operação bloqueada pela configuração do projeto.'
+};
+
+function toAuthErrorMessage(error) {
+    const code = typeof error?.code === 'string' ? error.code : '';
+    return AUTH_ERROR_MESSAGES[code] || toErrorMessage(error);
+}
 
 const toNumber = (value) => Number.parseFloat(String(value).replace(',', '.'));
 const formatMoney = (value) => `R$ ${Number(value || 0).toFixed(2)}`;
@@ -904,6 +927,9 @@ authForm.addEventListener('submit', async (e) => {
     const password = document.getElementById('password').value;
 
     try {
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+            throw new Error('Informe um e-mail válido.');
+        }
         if (mode === 'register') {
             const name = normalizeAccountName(document.getElementById('fullname').value);
             const role = document.getElementById('role-select').value;
@@ -917,45 +943,52 @@ authForm.addEventListener('submit', async (e) => {
             if (!allowedRoles.has(role)) throw new Error("Tipo de conta inválido.");
 
             const userCred = await createUserWithEmailAndPassword(auth, email, password);
-            const shortId = await generateUniqueShortId();
-            const { pinHash, pinSalt } = await makePinHash(pin);
             // Criação do documento do usuário
-            await setDoc(doc(db, "users", userCred.user.uid), {
-                name: name, email: email, role: role, pinHash, pinSalt,
-                shortId: shortId,
-                balance: 1000.00,
-                cashBalance: STARTING_CASH_BALANCE,
-                savingsBalance: 0,
-                stocks: { glasscoin: 0 },
-                contacts: [],
-                readNotificationIds: [],
-                bills: [],
-                billsPaidOnTime: 0,
-                billsPaidLate: 0,
-                dailyCashout: { dateKey: '', total: 0 },
-                failedPinAttempts: 0,
-                pinLockedUntil: null,
-                lastFailedPinAt: null,
-                lastPinChangeAt: null,
-                lastDailyClaim: null,
-                lastPasswordChangeAt: null,
-                loanOutstanding: 0,
-                borrowedThisWindow: 0,
-                loanWindowStartedAt: null,
-                lastLoanAt: null,
-                lastLoanRepaymentAt: null,
-                welfareEligible: true,
-                status: 'active',
-                lastInterestDate: serverTimestamp(),
-                lastDebtInterestDate: serverTimestamp(),
-                lastSavingsInterestDate: serverTimestamp(),
-                createdAt: serverTimestamp()
-            });
+            try {
+                const shortId = await generateUniqueShortId();
+                const { pinHash, pinSalt } = await makePinHash(pin);
+                await setDoc(doc(db, "users", userCred.user.uid), {
+                    name: name, email: email, role: role, pinHash, pinSalt,
+                    shortId: shortId,
+                    balance: 1000.00,
+                    cashBalance: STARTING_CASH_BALANCE,
+                    savingsBalance: 0,
+                    stocks: { glasscoin: 0 },
+                    contacts: [],
+                    readNotificationIds: [],
+                    bills: [],
+                    billsPaidOnTime: 0,
+                    billsPaidLate: 0,
+                    dailyCashout: { dateKey: '', total: 0 },
+                    failedPinAttempts: 0,
+                    pinLockedUntil: null,
+                    lastFailedPinAt: null,
+                    lastPinChangeAt: null,
+                    lastDailyClaim: null,
+                    lastPasswordChangeAt: null,
+                    loanOutstanding: 0,
+                    borrowedThisWindow: 0,
+                    loanWindowStartedAt: null,
+                    lastLoanAt: null,
+                    lastLoanRepaymentAt: null,
+                    welfareEligible: true,
+                    status: 'active',
+                    lastInterestDate: serverTimestamp(),
+                    lastDebtInterestDate: serverTimestamp(),
+                    lastSavingsInterestDate: serverTimestamp(),
+                    createdAt: serverTimestamp()
+                });
+            } catch (setupError) {
+                // Sem o documento do usuário o login ficaria quebrado;
+                // remove a conta órfã de autenticação para permitir nova tentativa.
+                try { await deleteUser(userCred.user); } catch (_) { /* ignora */ }
+                throw setupError;
+            }
             showToast("Bem-vindo ao GlassBank!");
         } else {
             await signInWithEmailAndPassword(auth, email, password);
         }
-    } catch (err) { showToast(toErrorMessage(err), 'error'); }
+    } catch (err) { showToast(toAuthErrorMessage(err), 'error'); }
     finally { btn.disabled = false; btn.innerText = mode==='register'?'Cadastrar':'Entrar'; }
 });
 
@@ -1073,6 +1106,9 @@ function initializeUser(uid) {
         }
 
         await processInterests(uid);
+    }, (error) => {
+        logSystemFailure('userListener', error, { userId: uid }).catch(() => {});
+        showToast(`Não foi possível sincronizar seu perfil (${toErrorMessage(error)}). Verifique as regras do Firestore.`, 'error');
     });
 
     listenToTransactions(uid);
@@ -1210,6 +1246,9 @@ function syncSystemData() {
             }
             initAdminPanel();
         }
+    }, (error) => {
+        logSystemFailure('cityListener', error, {}).catch(() => {});
+        showToast(`Falha ao sincronizar dados da Prefeitura (${toErrorMessage(error)}). Publique as regras atualizadas do Firestore.`, 'error');
     });
 }
 
@@ -2060,6 +2099,8 @@ function initAdminMonitor() {
             currentAdminTransactions = [];
             snap.forEach((docSnap) => currentAdminTransactions.push({ id: docSnap.id, ...docSnap.data() }));
             renderAdminMonitor();
+        }, (error) => {
+            logSystemFailure('adminTransactionsListener', error, {}).catch(() => {});
         });
     }
 
@@ -2072,6 +2113,8 @@ function initAdminMonitor() {
                 if (data.level === 'error') currentAdminLogs.push({ id: docSnap.id, ...data });
             });
             renderAdminMonitor();
+        }, (error) => {
+            logSystemFailure('adminLogsListener', error, {}).catch(() => {});
         });
     }
 
@@ -2087,6 +2130,8 @@ function initAdminMonitor() {
             });
             currentRiskUsers.sort((a, b) => (Number(a.balance || 0) + Number(a.loanOutstanding || 0)) - (Number(b.balance || 0) + Number(b.loanOutstanding || 0)));
             renderAdminMonitor();
+        }, (error) => {
+            logSystemFailure('riskUsersListener', error, {}).catch(() => {});
         });
     }
 }
@@ -2357,6 +2402,48 @@ window.changeAccountPassword = async () => {
         showToast(toErrorMessage(error), 'error');
     } finally {
         renderPasswordSecurity();
+    }
+};
+
+window.deleteAccount = async () => {
+    if (!currentUser || !auth.currentUser) return;
+
+    const passwordInput = document.getElementById('delete-account-password');
+    const button = document.getElementById('delete-account-btn');
+    if (!passwordInput || !button) return;
+
+    const password = passwordInput.value;
+    if (!password) {
+        showToast('Informe sua senha atual para confirmar a exclusão da conta.', 'error');
+        passwordInput.focus();
+        return;
+    }
+
+    const confirmed = window.confirm('Sua conta, dados e histórico serão removidos. Essa ação não pode ser desfeita. Deseja continuar?');
+    if (!confirmed) return;
+
+    button.disabled = true;
+    try {
+        const credential = EmailAuthProvider.credential(currentUser.email, password);
+        await reauthenticateWithCredential(auth.currentUser, credential);
+
+        try {
+            await deleteDoc(doc(db, 'users', currentUser.uid));
+        } catch (firestoreDeleteError) {
+            logSystemFailure('deleteAccount:firestore', firestoreDeleteError, { userId: currentUser.uid }).catch(() => {});
+        }
+
+        await deleteUser(auth.currentUser);
+        await signOut(auth);
+        passwordInput.value = '';
+        closeModal('settings-modal');
+        showToast('Conta excluída com sucesso.');
+        navTo('auth');
+    } catch (error) {
+        logSystemFailure('deleteAccount', error, { userId: currentUser?.uid }).catch(() => {});
+        showToast(toErrorMessage(error), 'error');
+    } finally {
+        button.disabled = false;
     }
 };
 
@@ -3088,6 +3175,13 @@ function listenToTransactions(uid) {
         renderHistory(activeHistoryFilter);
         renderNotifications();
         renderBalanceChart();
+    }, (error) => {
+        logSystemFailure('transactionsListener', error, { userId: uid }).catch(() => {});
+        if (error?.code === 'failed-precondition') {
+            showToast('Índice do Firestore ausente para o histórico. Crie o índice (participants array-contains + timestamp DESC) pelo link exibido no console.', 'error');
+        } else {
+            showToast(`Falha ao carregar transações (${toErrorMessage(error)}). Verifique as regras do Firestore.`, 'error');
+        }
     });
 }
 

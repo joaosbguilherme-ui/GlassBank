@@ -110,6 +110,15 @@
                 </button>
             </div>
 
+            <div class="settings-block">
+                <label>Exclusão da conta</label>
+                <p class="section-copy">Para apagar a conta, confirme sua senha atual e confirme a ação.</p>
+                <input type="password" id="delete-account-password" placeholder="Senha atual" autocomplete="current-password">
+                <button id="delete-account-btn" class="danger-btn" onclick="deleteAccount()">
+                    <i class="fas fa-user-slash" style="margin-right:6px;" aria-hidden="true"></i>Excluir minha conta
+                </button>
+            </div>
+
             <button onclick="closeModal('settings-modal')" style="margin-top:6px;">
                 <i class="fas fa-times" style="margin-right:6px" aria-hidden="true"></i>Fechar
             </button>
